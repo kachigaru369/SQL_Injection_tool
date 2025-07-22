@@ -12,6 +12,7 @@ parse = urlparse(full_url)
     # print(parsed.netloc)    example.com
     # print(parsed.path)      /post
     # print(parsed.query)     postId=3
+
 # base_url = f"{parse.scheme}://{parse.netloc}"
 # path = parse.path + ("?" + parse.query if parse.query else "")
 # submit_url = base_url + path
@@ -93,3 +94,28 @@ for dtype, payload in tests.items():
             print(f"[col {i+1}] payload : {inject} | status : {res.status_code} | lenght : {len(res.text)}")
         except Exception as e:
             print(f"[col {i+1}] error: {e}")
+while True:
+    try:
+        attack = int(input("""wanna attack? 
+    1 : yes
+    0 : no\n"""))
+
+        if attack == 1:
+            while True:
+                self_payload = input("enter your payload:")
+                test_params = query_params.copy()
+                test_params[edit_param] = [self_payload]
+                self_query = urlencode(test_params,doseq=True)
+                self_url = urlunparse(parse._replace(query=self_query))
+                try:    
+                    res = session.get(self_url)
+                    print(res.text[:500])
+                    print("\nstatus code :",res.status_code)
+                    break
+                except Exception as e:
+                    print("pls try again")
+        else:
+            break
+    except Exception as e:
+        print("ERROR:", e)
+        print("enter valid number:")
