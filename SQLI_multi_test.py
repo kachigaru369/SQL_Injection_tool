@@ -82,6 +82,13 @@ def _short_hash(s: str):
     data = s[:65536].encode("utf-8", errors="ignore")
     return hashlib.sha1(data).hexdigest()[:10]
 
+ENCODED_RX = re.compile(r"%[0-9A-Fa-f]{2}")
+
+def looks_encoded(s: str) -> bool:
+    """A very simple heuristic: has %HH patterns."""
+    return bool(ENCODED_RX.search(s or ""))
+
+
 # ---------- placeholder helpers ----------
 PLACEHOLDER_RX = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -274,6 +281,9 @@ class InputCollector:
     def __init__(self, url, timeout=30):
         self.timeout = timeout
         self.session = requests.Session()
+        self.injection_mode = "append"  # or "replace"
+        self.encode_cookies = "auto"   # "auto" | "encode" | "raw"
+        self.encode_headers = "auto"   # "auto" | "encode" | "raw"
         self.set_url(url)
 
     def set_url(self, url):
@@ -536,14 +546,18 @@ class InputCollector:
         try:
             if pt == "url":
                 params = {k: v[:] for k, v in self.prepared_data["params"].items()}
-                params[key] = [p] 
+                orig = self.original_values.get(key, "")
+                val  = (orig + p) if (self.injection_mode == "append") else p
+                params[key] = [val]
                 new_query = urlencode(params, doseq=True)
                 new_url = urlunparse(self.prepared_data["parsed"]._replace(query=new_query))
                 return {"url": new_url, "method": "GET"}
 
             if pt == "post":
                 fields = self.prepared_data["fields"].copy()
-                fields[key] = p
+                orig = self.original_values.get(key, "")
+                val  = (orig + p) if (self.injection_mode == "append") else p
+                fields[key] = val
                 method = self.prepared_data.get("method", "POST").upper()
                 action_url = self.prepared_data.get("action_url", self.url)
                 if method == "GET":
@@ -557,15 +571,30 @@ class InputCollector:
 
             if pt == "cookie":
                 cookies = self.prepared_data["cookies"].copy()
-                p_enc = quote(p, safe="")
-                cookies[key] = str(self.original_values[key]) + p_enc
+                orig = str(self.original_values.get(key, ""))
+                use_encode = (
+                    self.encode_cookies == "encode" or
+                    (self.encode_cookies == "auto" and looks_encoded(orig))
+                )
+                payload_piece = quote(p, safe="") if use_encode else p
+                val = (orig + payload_piece) if (getattr(self, "injection_mode", "append") == "append") else payload_piece
+                cookies[key] = val
                 return {"url": self.url, "method": "GET", "cookies": cookies}
+
 
             if pt == "header":
                 headers = self.prepared_data["headers"].copy()
-                p_enc = quote(p, safe="")
-                headers[key] = str(self.original_values[key]) + p_enc
+                orig = str(self.original_values.get(key, ""))
+                # تصمیم برای انکود payload بر اساس سوییچ
+                use_encode = (
+                    self.encode_headers == "encode" or
+                    (self.encode_headers == "auto" and looks_encoded(orig))
+                )
+                payload_piece = quote(p, safe="") if use_encode else p
+                val = (orig + payload_piece) if (getattr(self, "injection_mode", "append") == "append") else payload_piece
+                headers[key] = val
                 return {"url": self.url, "method": "GET", "headers": headers}
+
         except Exception as e:
             print(f"[-] build error for {pt}:{key}: {e}")
             return None
@@ -636,11 +665,15 @@ def open_in_browser(req):
         return
 
     def cookie_list_from_req(url, cookies_dict):
-        if not cookies_dict: return []
+        if not cookies_dict:
+            return []
         domain = urlparse(url).hostname or ""
         return [{"name": k, "value": v, "domain": domain, "path": "/"} for k, v in cookies_dict.items()]
 
-    with sync_playwright() as p:
+    p = sync_playwright().start()
+    browser = None
+    context = None
+    try:
         browser = p.chromium.launch(headless=False)
         context_kwargs = {}
         if req.get("headers"):
@@ -666,10 +699,25 @@ def open_in_browser(req):
                 page.set_content(f"<pre>Status: {status}\n\n{escape_html(txt)}</pre>")
         except Exception as e:
             page.set_content(f"<pre>Navigation error:\n{escape_html(str(e))}</pre>")
+
+        input("\nPress Enter to close it : ")
+
+    finally:
         try:
-            page.wait_for_timeout(10_000)
+            if context:
+                context.close()
         except Exception:
             pass
+        try:
+            if browser:
+                browser.close()
+        except Exception:
+            pass
+        try:
+            p.stop()
+        except Exception:
+            pass
+
 
 
 # ------------------- Folder loader (payload/error dicts) -------------------
@@ -1228,7 +1276,6 @@ def run_db_info_interactive(ic):
 
 # ------------------- Browser selection helper -------------------
 def prompt_open_results_in_browser(last_prepared: dict):
-    
     if not PW_AVAILABLE:
         print("[*] Playwright not installed; skipping browser open.")
         return
@@ -1237,29 +1284,41 @@ def prompt_open_results_in_browser(last_prepared: dict):
         return
 
     keys = list(last_prepared.keys())
-    print("\nOpen which results in browser?")
-    for i, k in enumerate(keys, start=1):
-        print(f"{i}. {k}")
-    print("Enter indices (e.g., 1,3-5) or 0 to skip.")
-    sel = input("> ").strip()
-    if sel in ("0", "۰", ""):
-        return
-    try:
-        indices = parse_multi_indices(sel, len(keys))
-    except Exception:
-        print("[-] Invalid selection.")
-        return
-    if not indices:
-        print("[-] Nothing selected.")
-        return
 
-    for i in indices:
-        label = keys[i-1]
-        print(f"\n[Playwright] Opening: {label}")
-        open_in_browser(last_prepared[label])
-        cont = input("Open another? (y/n): ").strip().lower()
-        if cont not in ("y", "yes", "۱"):
-            break
+    while True:
+        print("\nOpen which results in browser?")
+        for i, k in enumerate(keys, start=1):
+            print(f"{i}. {k}")
+        print("Enter indices (e.g., 1,3-5 or 'all') or 0 to stop.")
+        sel = input("> ").strip()
+        if sel in ("0", "۰", ""):
+            return
+
+        try:
+            indices = parse_multi_indices(sel, len(keys))
+        except Exception:
+            print("[-] Invalid selection.")
+            continue
+        if not indices:
+            print("[-] Nothing selected.")
+            continue
+
+        for i in indices:
+            label = keys[i-1]
+            print(f"\n[Playwright] Opening: {label}")
+            open_in_browser(last_prepared[label])
+
+        while True:
+            cont = input("Open more? (y/n): ").strip().lower()
+            yes_set = {"y", "yes", "1", "۱", "ب", "غ"}
+            no_set  = {"n", "no", "0", "۰", "ن", "د"}
+            if cont in yes_set:
+                break
+            if cont in no_set or cont == "":
+                return
+            print("Please answer y/n .")
+
+
 
 
 
@@ -1538,6 +1597,9 @@ def main():
         print("13) DB Version Probe (UNION)")
         print("14) DB Info Interactive (UNION builder)")
         print("15) Column Count Helper (Advanced, multi-DBMS, CAST/Time/Boolean-friendly)")
+        print("16) Toggle Injection Mode (append/replace)  [current: {}]".format(getattr(ic, "injection_mode", "append") if ic else "append"))
+        print("17) Toggle Cookie Encode Mode (auto/encode/raw)  [current: {}]".format(getattr(ic, "encode_cookies", "auto") if ic else "auto"))
+        print("18) Toggle Header Encode Mode (auto/encode/raw)  [current: {}]".format(getattr(ic, "encode_headers", "auto") if ic else "auto"))
         choice = input("> ").strip()
 
         if choice in ("9", "۹"):
@@ -1814,6 +1876,30 @@ def main():
             run_column_counter_advanced(ic)
             continue
 
+        if choice in ("16", "۱۶"):
+            ensure_ic()
+            ic.injection_mode = "replace" if ic.injection_mode == "append" else "append"
+            print(f"[*] injection_mode -> {ic.injection_mode}")
+            continue
+
+        if choice in ("17", "۱۷"):
+            ensure_ic()
+            order = ["auto", "encode", "raw"]
+            cur = getattr(ic, "encode_cookies", "auto")
+            nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "auto"
+            ic.encode_cookies = nxt
+            print(f"[*] encode_cookies -> {ic.encode_cookies}")
+            continue
+
+        if choice in ("18", "۱۸"):
+            ensure_ic()
+            order = ["auto", "encode", "raw"]
+            cur = getattr(ic, "encode_headers", "auto")
+            nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "auto"
+            ic.encode_headers = nxt
+            print(f"[*] encode_headers -> {ic.encode_headers}")
+            continue
+
 
         print("[-] Invalid choice.")
 
@@ -1823,3 +1909,6 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\n[!] Interrupted.")
+
+
+

