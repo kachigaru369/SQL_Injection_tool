@@ -88,6 +88,12 @@ def looks_encoded(s: str) -> bool:
     """A very simple heuristic: has %HH patterns."""
     return bool(ENCODED_RX.search(s or ""))
 
+def timed_send(ic, req, quiet: bool = False, tries_override: int = None):
+    t0 = perf_counter()
+    r = ic.send(req, quiet=quiet, tries_override=tries_override)
+    dt = perf_counter() - t0
+    return r, dt
+
 
 # ---------- placeholder helpers ----------
 PLACEHOLDER_RX = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -625,10 +631,10 @@ class InputCollector:
         return out if out else None
 
     # -------- sender helper --------
-    def send(self, req, quiet: bool = False):
+    def send(self, req, quiet: bool = False, tries_override: int = None):  # NEW param
         # Retry + backoff 
         transient = {429, 502, 503, 504}
-        tries = 3
+        tries = tries_override if tries_override is not None else 3  # NEW
         backoff = 0.6
         last_err = None
         for attempt in range(1, tries + 1):
@@ -845,39 +851,101 @@ def run_blind_user_payload(ic):
     print("1) Body tester word (presence/absence)")
     print("2) HTTP status equals (e.g., 500)")
     print("3) HTTP status not equals (e.g., 200)")
-    det_mode = input(">>> ").strip()
+    print("4) Response time >= threshold (time-based blind)")
+    det_sel = input(">>> ").strip()
 
+    # defaults
+    det_mode = None
     tester = ""
     tmode = "success"
     status_target = None
-    if det_mode in ("1","۱"):
+
+    # throttle defaults (will be overridden if time-based)
+    throttle_every = 8
+    throttle_short = 0.08
+    throttle_long = 0.35
+
+    # time-based vars
+    time_threshold = None
+    time_repeats = 1
+    expected_delay = None
+
+    if det_sel in ("1","۱"):
+        det_mode = "tester"
         tester = input("Tester word (leave blank to skip): ").strip()
         if tester:
             ttype = input("Tester type: 1) error (absence=True)  2) success (presence=True)  >>> ").strip()
             tmode = "error" if ttype in ("1","۱") else "success"
-        det_mode = "tester"
-    elif det_mode in ("2","۲"):
+
+    elif det_sel in ("2","۲"):
+        det_mode = "status_eq"
         try:
             status_target = int(input("Status code to consider TRUE (e.g., 500): ").strip() or "500")
         except:
             status_target = 500
-        det_mode = "status_eq"
-    elif det_mode in ("3","۳"):
+
+    elif det_sel in ("3","۳"):
+        det_mode = "status_neq"
         try:
             status_target = int(input("Status code to consider FALSE (e.g., 200) — anything else TRUE: ").strip() or "200")
         except:
             status_target = 200
-        det_mode = "status_neq"
+
+    elif det_sel in ("4","۴"):
+        det_mode = "time" 
+        try:
+            time_repeats = int(input("Repeat up to N times if needed? (default 2): ").strip() or "2")
+            if time_repeats < 1: time_repeats = 1
+        except:
+            time_repeats = 2
+
+        try:
+            time_threshold = float(input("Consider TRUE if response time ≥ (seconds): ").strip() or "1.5")
+        except:
+            time_threshold = 1.5
+
+        raw_false_thr = input("Consider FALSE if response time ≤ (seconds, optional): ").strip()
+        try:
+            time_false_threshold = float(raw_false_thr) if raw_false_thr else None
+        except:
+            time_false_threshold = None
+
+        early_stop_in = (input("Stop early when TRUE detected? (y/n) [y]: ").strip().lower() or "y")
+        early_stop = early_stop_in in {"y","yes","1","۱","ب","غ"}
+
+        throttle_every = 999999
+        throttle_short = 0.0
+        throttle_long = 0.0
+
+        print("\nAnti-cache mode:")
+        print("1) both (headers + query param)")
+        print("2) param-only")
+        print("3) headers-only")
+        print("4) off")
+        print("5) auto-fallback (try both; on 400/403/405 retry param-only) [default]")
+        ac_sel = (input(">>> ").strip() or "5")
+        if ac_sel == "1":
+            anti_cache_mode = "both"
+        elif ac_sel == "2":
+            anti_cache_mode = "param"
+        elif ac_sel == "3":
+            anti_cache_mode = "headers"
+        elif ac_sel == "4":
+            anti_cache_mode = "off"
+        else:
+            anti_cache_mode = "auto"
+
+
+
+
     else:
         det_mode = "none"
 
+
     # throttle 
-    throttle_every = 8
-    throttle_short = 0.08
-    throttle_long = 0.35
     global_counter = 0
 
-    # --- موفق برای نمایش لحظه‌ای ---
+    # --- برای نمایش لحظه‌ای ---
     found_combos = []        
     found_combo_keys = set() 
     per_var_values = {}      # map: var -> [unique values in order]
@@ -913,7 +981,129 @@ def run_blind_user_payload(ic):
             print(f"  {v}: {per_var_values[v]}")
         print("")  
 
-    def _judge(r):
+    def _apply_anti_cache(req_local, i, mode):
+        # mode: "both" | "param" | "headers" | "off"
+        if mode in ("both", "headers"):
+            hdrs = dict(req_local.get("headers") or {})
+            hdrs["Cache-Control"] = "no-store, no-cache, max-age=0"
+            hdrs["Pragma"] = "no-cache"
+            hdrs["X-Req-Nonce"] = f"{time.time():.6f}-{i}"
+            req_local["headers"] = hdrs
+
+        if mode in ("both", "param"):
+            if (req_local.get("method", "GET").upper() == "GET") and req_local.get("url"):
+                pu = urlparse(req_local["url"])
+                q = dict(parse_qsl(pu.query, keep_blank_values=True))
+                q["_t"] = f"{time.time():.6f}-{i}"
+                req_local["url"] = urlunparse(pu._replace(query=urlencode(q)))
+        return req_local
+
+    # NEW: measure elapsed time (median over repeats), with tries_override=1 to avoid backoff impact
+    def _send_and_time(ic, req, repeats: int = 1, anti_cache_mode: str = "auto"):
+        """
+        anti_cache_mode:
+        - "both"    : هدر + پارامتر
+        - "param"   : فقط پارامتر _t
+        - "headers" : فقط هدرهای ضدکش
+        - "off"     : بدون ضدکش
+        - "auto"    : ابتدا both؛ اگر 400/403/405 دید، همان نوبت را با param-only تکرار می‌کند
+        """
+        times = []
+        r_last = None
+
+        for i in range(max(1, repeats)):
+            req_local = dict(req)
+
+            def send_once(local_req):
+                t0 = perf_counter()
+                r = ic.send(local_req, quiet=True, tries_override=1)
+                dt = perf_counter() - t0
+                return r, dt
+
+            if anti_cache_mode == "off":
+                r, dt = send_once(req_local)
+
+            elif anti_cache_mode == "param":
+                r, dt = send_once(_apply_anti_cache(dict(req_local), i, "param"))
+
+            elif anti_cache_mode == "headers":
+                r, dt = send_once(_apply_anti_cache(dict(req_local), i, "headers"))
+
+            elif anti_cache_mode == "both":
+                r, dt = send_once(_apply_anti_cache(dict(req_local), i, "both"))
+
+            else:  # auto
+                r, dt = send_once(_apply_anti_cache(dict(req_local), i, "both"))
+                if r is not None and r.status_code in (400, 403, 405):
+                    r, dt = send_once(_apply_anti_cache(dict(req_local), i, "param"))
+
+            times.append(dt)
+            r_last = r
+
+        times_sorted = sorted(times)
+        dt_med = times_sorted[len(times_sorted)//2]
+        return r_last, times, dt_med
+
+
+    def _send_time_stepwise(ic, req, repeats: int, anti_cache_mode: str,thr_true: float, thr_false: float | None, early_stop: bool):
+        times = []
+        labels = []  # per-try: True / False / None
+        r_last = None
+        used = 0
+        matched_any = False  # OR across tries
+
+        def _send_once(local_req, i):
+            def send_once(lreq):
+                t0 = perf_counter()
+                r = ic.send(lreq, quiet=True, tries_override=1)
+                dt = perf_counter() - t0
+                return r, dt
+
+            if anti_cache_mode == "off":
+                return send_once(local_req)
+            elif anti_cache_mode == "param":
+                return send_once(_apply_anti_cache(dict(local_req), i, "param"))
+            elif anti_cache_mode == "headers":
+                return send_once(_apply_anti_cache(dict(local_req), i, "headers"))
+            elif anti_cache_mode == "both":
+                return send_once(_apply_anti_cache(dict(local_req), i, "both"))
+            else:
+                r, dt = send_once(_apply_anti_cache(dict(local_req), i, "both"))
+                if r is not None and r.status_code in (400, 403, 405):
+                    r, dt = send_once(_apply_anti_cache(dict(local_req), i, "param"))
+                return r, dt
+
+        for i in range(repeats):
+            req_local = dict(req)
+            r, dt = _send_once(req_local, i)
+            r_last = r
+            times.append(dt)
+            used += 1
+
+            lbl = None
+            if dt >= thr_true:
+                lbl = True
+                matched_any = True
+            elif (thr_false is not None) and (dt <= thr_false):
+                lbl = False
+            labels.append(lbl)
+
+            if early_stop and lbl is True:  # y ⇒ findfirst/OR
+                break
+
+        # y ⇒ OR (هر True کافی‌ست) | n ⇒ AND (همه باید True باشند)
+        if early_stop:
+            final_match = matched_any
+        else:
+            final_match = (len(labels) == repeats and all(x is True for x in labels))
+
+        return r_last, times, final_match, used, labels
+
+
+
+
+
+    def _judge(r, dt=None):
         if r is None:
             return None, False
         body = r.text or ""
@@ -923,13 +1113,17 @@ def run_blind_user_payload(ic):
             ok = (r.status_code != status_target)
         elif det_mode == "tester":
             ok = eval_by_tester_mode(body, tester, tmode) if tester else False
+        elif det_mode == "time":
+            ok = (dt is not None and time_threshold is not None and dt >= time_threshold)
         else:
             ok = False
         return r.status_code, ok
 
+
     # بدون placeholder
     if not vars_all:
         counter = 0
+        any_ok_time = False
         for label, tpl in payload_map.items():
             built = ic.prepare_injection(tpl)
             if not built:
@@ -937,17 +1131,33 @@ def run_blind_user_payload(ic):
                 continue
             for rk, req in built.items():
                 counter += 1
-                r = ic.send(req, quiet=True)
-                time.sleep(throttle_short); global_counter += 1
-                if global_counter % throttle_every == 0: time.sleep(throttle_long)
-                status, ok = _judge(r)
-                if status is None:
-                    continue
-                print(f"[{counter}] {label} @ {rk} | status={status} | match? {ok}")
-                if ok:
-                    if _add_found({}):
-                        _print_progress()
+                if det_mode == "time":
+                    r, times, matched, used, labels = _send_time_stepwise(ic, req, time_repeats, anti_cache_mode, time_threshold, time_false_threshold, early_stop)
+                    if r is None:
+                        continue
+                    if used == 1:
+                        print(f"[{counter}] {label} @ {rk} | status={r.status_code} | time={times[0]:.3f}s | match? {matched}")
+                    else:
+                        for idx_try, t in enumerate(times, 1):
+                            lab = labels[idx_try-1]
+                            tag = "TRUE" if lab is True else ("FALSE" if lab is False else "…")
+                            print(f"[{counter}.{idx_try}] {label} @ {rk} | status={r.status_code} | time={t:.3f}s | {tag}")
+                        print(f"[{counter}] {label} @ {rk} | final_match={matched} (n={used})")
+                else:
+                    r = ic.send(req, quiet=True)
+                    time.sleep(throttle_short); global_counter += 1
+                    if global_counter % throttle_every == 0: time.sleep(throttle_long)
+                    status, ok = _judge(r)
+                    if status is None:
+                        continue
+                    print(f"[{counter}] {label} @ {rk} | status={status} | match? {ok}")
+                    if ok:
+                        if _add_found({}):
+                            _print_progress()
+
         return
+
+
 
     # --- if placeholder : outer exhaustive + findfirst ---
     plan, _ = prompt_placeholder_plan(vars_all)
@@ -994,6 +1204,7 @@ def run_blind_user_payload(ic):
                 idx_str = ", ".join(idx_parts)
 
                 any_ok = False
+                any_ok_time = False
                 for label, tpl in payload_map.items():
                     filled = tpl
                     for k, val in values_now.items():
@@ -1005,29 +1216,47 @@ def run_blind_user_payload(ic):
 
                     for rk, req in built_group.items():
                         test_counter += 1
-                        r = ic.send(req, quiet=True)
-                        time.sleep(throttle_short); global_counter += 1
-                        if global_counter % throttle_every == 0: time.sleep(throttle_long)
+                        if det_mode == "time":
+                            r, times, matched, used, labels = _send_time_stepwise(
+                                ic, req, time_repeats, anti_cache_mode, time_threshold, time_false_threshold, early_stop
+                            )
+                            if r is None:
+                                continue
+                            if used == 1:
+                                print(f"[{test_counter}] {label} @ {rk} | idxs=[{idx_str}] | status={r.status_code} | time={times[0]:.3f}s | match? {matched}")
 
-                        status, ok = _judge(r)
-                        if status is None:
-                            continue
+                            else:
+                                for idx_try, t in enumerate(times, 1):
+                                    lab = labels[idx_try-1]
+                                    tag = "TRUE" if lab is True else ("FALSE" if lab is False else "…")
+                                    print(f"[{test_counter}.{idx_try}] {label} @ {rk} | idxs=[{idx_str}] | status={r.status_code} | time={t:.3f}s | {tag}")
+                                print(f"[{test_counter}] {label} @ {rk} | idxs=[{idx_str}] | final_match={matched} (n={used})")
+                            if matched:
+                                any_ok_time = any_ok_time or matched
+                                if _add_found(values_now):
+                                    _print_progress()
+                        else:
+                            r = ic.send(req, quiet=True)
+                            time.sleep(throttle_short); global_counter += 1
+                            if global_counter % throttle_every == 0: time.sleep(throttle_long)
+                            status, ok = _judge(r)
+                            if status is None:
+                                continue
+                            any_ok = any_ok or ok
+                            print(f"[{test_counter}] {label} @ {rk} | idxs=[{idx_str}] | status={status} | match? {ok}")
+                            if ok:
+                                if _add_found(values_now):
+                                    _print_progress()
 
-                        any_ok = any_ok or ok
-                        print(f"[{test_counter}] {label} @ {rk} | idxs=[{idx_str}] | status={status} | match? {ok}")
-
-                        if ok:
-                            if _add_found(values_now):
-                                _print_progress()
-
-                if any_ok:
-                    
+                if (det_mode != "time" and any_ok) or (det_mode == "time" and any_ok_time):
                     for v, cfg in plan.items():
                         if v != outer_var and cfg["strategy"] == "findfirst" and found_map.get(v) is None:
                             found_map[v] = idx_map[v]
                             inner_ranges[v] = [idx_map[v]]
                             progressed = True
                     break
+
+
 
     print("\n[Done] Blind tests finished.")
 
@@ -1052,11 +1281,14 @@ def run_column_counter(ic):
         if not built: return []
         rows = []
         for lbl, req in built.items():
-            r = ic.send(req)
-            if r is None: continue
+            r, dt = timed_send(ic, req, quiet=True)
+            if r is None:
+                rows.append((lbl, None, None, None, None))
+                continue
             body = r.text or ""
-            rows.append((lbl, r.status_code, len(body), _short_hash(body)))
+            rows.append((lbl, r.status_code, len(body), _short_hash(body), dt))
         return rows
+
 
     print("\n[ORDER BY scan]")
     for com in comment_styles:
@@ -1069,7 +1301,7 @@ def run_column_counter(ic):
                     print(f"[i={i}] send failed.")
                     continue
                 sample = rows[0]
-                print(f"[i={i}] -> status={sample[1]} len={sample[2]} hash={sample[3]}")
+                print(f"[i={i}] -> status={sample[1]} len={sample[2]} hash={sample[3]} time={sample[4]:.3f}s")
 
     print("\n[UNION NULL scan]")
     for com in comment_styles:
@@ -1083,7 +1315,7 @@ def run_column_counter(ic):
                     print(f"[cols={i}] send failed.")
                     continue
                 sample = rows[0]
-                print(f"[cols={i}] -> status={sample[1]} len={sample[2]} hash={sample[3]}")
+                print(f"[cols={i}] -> status={sample[1]} len={sample[2]} hash={sample[3]} time={sample[4]:.3f}s")
 
 def run_datatype_tester(ic):
     if not ic or not ic.prepared_data or not ic.selected_keys:
@@ -1115,11 +1347,14 @@ def run_datatype_tester(ic):
         if not built: return []
         rows = []
         for lbl, req in built.items():
-            r = ic.send(req)
-            if r is None: continue
+            r, dt = timed_send(ic, req, quiet=True)
+            if r is None:
+                rows.append((lbl, None, None, None, None))
+                continue
             body = r.text or ""
-            rows.append((lbl, r.status_code, len(body), _short_hash(body)))
+            rows.append((lbl, r.status_code, len(body), _short_hash(body), dt))
         return rows
+
 
     for com in comment_styles:
         for dtype, val in tests.items():
@@ -1135,7 +1370,7 @@ def run_datatype_tester(ic):
                     print(f"[col {i+1}] send failed.")
                     continue
                 sample = rows[0]
-                print(f"[col {i+1}] status={sample[1]} len={sample[2]} hash={sample[3]}")
+                print(f"[col {i+1}] status={sample[1]} len={sample[2]} hash={sample[3]} time={sample[4]:.3f}s")
 
 def run_version_probe(ic):
     if not ic or not ic.prepared_data or not ic.selected_keys:
@@ -1171,11 +1406,14 @@ def run_version_probe(ic):
         if not built: return []
         rows = []
         for lbl, req in built.items():
-            r = ic.send(req)
-            if r is None: continue
+            r, dt = timed_send(ic, req, quiet=True)
+            if r is None:
+                rows.append((lbl, None, None, None, None))
+                continue
             body = r.text or ""
-            rows.append((lbl, r.status_code, len(body), _short_hash(body)))
+            rows.append((lbl, r.status_code, len(body), _short_hash(body), dt))
         return rows
+
 
     comment_styles = ["-- ", "#"]
     for com in comment_styles:
@@ -1192,7 +1430,7 @@ def run_version_probe(ic):
                 print(" send failed.")
                 continue
             sample = rows[0]
-            print(f" status={sample[1]} len={sample[2]} hash={sample[3]}")
+            print(f" status={sample[1]} len={sample[2]} hash={sample[3]} time={sample[4]:.3f}s")
 
 def run_db_info_interactive(ic):
     if not ic or not ic.prepared_data or not ic.selected_keys:
@@ -1267,11 +1505,12 @@ def run_db_info_interactive(ic):
 
     print(f"\nPayload: {payload}\n")
     for lbl, req in built.items():
-        r = ic.send(req)
+        r, dt = timed_send(ic, req, quiet=True)
         if r is None:
             print(f"{lbl} -> send failed")
             continue
-        print(f"{lbl}: status={r.status_code} len={len(r.text)} hash={_short_hash(r.text)}")
+        print(f"{lbl}: status={r.status_code} len={len(r.text)} hash={_short_hash(r.text)} time={dt:.3f}s")
+
 
 
 # ------------------- Browser selection helper -------------------
@@ -1703,10 +1942,11 @@ def main():
             print("\n[Sending prepared requests...]")
             for idx, (label, req) in enumerate(last_prepared.items(), start=1):
                 print(f"\n[{idx}] sending {label}")
-                r = ic.send(req)
+                r, dt = timed_send(ic, req)
                 if r is not None:
                     body = r.text or ""
-                    print(f"[+] status={r.status_code}, len={len(body)} hash={_short_hash(body)}")
+                    # print(f"[+] status={r.status_code}, len={len(body)} hash={_short_hash(body)} time={dt:.3f}s (elapsed={r.elapsed.total_seconds():.3f}s)")
+                    print(f"[+] status={r.status_code}, len={len(body)} hash={_short_hash(body)} time={dt:.3f}s")
                     last_responses[label] = body
                 else:
                     print("[!] request failed")
@@ -1789,10 +2029,11 @@ def main():
             last_responses.clear()
             for idx, (lbl, req) in enumerate(last_prepared.items(), start=1):
                 print(f"\n[{idx}] sending {lbl}")
-                r = ic.send(req)
+                r, dt = timed_send(ic, req)  
                 if r is not None:
                     body = r.text or ""
-                    print(f"[+] status={r.status_code}, len={len(body)} hash={_short_hash(body)}")
+                    # print(f"[+] status={r.status_code}, len={len(body)} hash={_short_hash(body)} time={dt:.3f}s (elapsed={r.elapsed.total_seconds():.3f}s)")
+                    print(f"[+] status={r.status_code}, len={len(body)} hash={_short_hash(body)} time={dt:.3f}s")
                     if compiled_errs:
                         matches = scan_errors(body, compiled_errs)
                         if matches:
@@ -1804,6 +2045,7 @@ def main():
                     last_responses[lbl] = body
                 else:
                     print("[!] request failed")
+
 
             prompt_open_results_in_browser(last_prepared)
             continue
