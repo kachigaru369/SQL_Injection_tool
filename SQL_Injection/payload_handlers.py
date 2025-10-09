@@ -2,7 +2,11 @@ import re
 import itertools
 import importlib.util
 import os
+import logging
 from utils import to_int_safe, parse_multi_indices, validate_input
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 PLACEHOLDER_RX = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -12,20 +16,16 @@ def find_placeholders_in_string(s: str):
 def find_placeholders_in_dict(d: dict):
     found = []
     for v in d.values():
-        found += find_placeholders_in_string(v)
-    out = []
-    for x in found:
-        if x not in out:
-            out.append(x)
-    return out
+        if isinstance(v, dict):
+            found += find_placeholders_in_dict(v.get("payloads", {}))
+        elif isinstance(v, list):
+            for item in v:
+                found += find_placeholders_in_string(item)
+        else:
+            found += find_placeholders_in_string(v)
+    return list(dict.fromkeys(found))
 
 def parse_list_or_single(prompt_txt: str):
-    """
-    Input:
-      - "abc" -> ["abc"]
-      - "[a,b,c]" -> ["a","b","c"]
-      - "" -> []
-    """
     raw = input(prompt_txt).strip()
     if not raw:
         return []
@@ -43,7 +43,7 @@ def expand_one_payload_string(s: str, var_map: dict):
     for v in vars_in:
         vals = var_map.get(v, [])
         if not vals:
-            print(f"[!] No value provided for placeholder {{{v}}}, skipping this payload.")
+            logger.warning(f"No value provided for placeholder {{{v}}}, skipping this payload.")
             return []
         lists.append([(v, val) for val in vals])
     combos = list(itertools.product(*lists))
@@ -56,6 +56,7 @@ def expand_one_payload_string(s: str, var_map: dict):
             parts.append(f"{vn}={vv}")
         label_suffix = "|".join(parts)
         out.append((label_suffix, filled))
+    logger.info(f"Expanded payload {s} to {len(out)} variants")
     return out
 
 def expand_payload_dict(payload_dict: dict):
@@ -64,20 +65,25 @@ def expand_payload_dict(payload_dict: dict):
     for v in vars_all:
         vals = parse_list_or_single(f"Value(s) for placeholder {{{v}}} (single or [a,b,c]): ")
         if not vals:
-            print(f"[!] No values entered for {{{v}}}. This var will be skipped in expansions.")
+            logger.warning(f"No values entered for {{{v}}}. This var will be skipped in expansions.")
         var_map[v] = vals
 
     expanded = {}
-    for label, s in payload_dict.items():
-        variants = expand_one_payload_string(s, var_map)
-        if not variants:
-            continue
-        for label_suffix, filled in variants:
-            new_label = label if not label_suffix else f"{label}|{label_suffix}"
-            expanded[new_label] = filled
+    for label, data in payload_dict.items():
+        if isinstance(data, dict):
+            payloads = data.get("payloads", [])
+        else:
+            payloads = data
+        for p in payloads:
+            variants = expand_one_payload_string(p, var_map)
+            if not variants:
+                continue
+            for label_suffix, filled in variants:
+                new_label = label if not label_suffix else f"{label}|{label_suffix}"
+                expanded[new_label] = filled
     return expanded
 
-def expand_single_payload_string(s: str, max_combinations=1000):
+def expand_single_payload_string(s: str, max_combinations=10000):
     vars_in = find_placeholders_in_string(s)
     if not vars_in:
         return {"p0": s}
@@ -85,17 +91,16 @@ def expand_single_payload_string(s: str, max_combinations=1000):
     for v in vars_in:
         vals = parse_list_or_single(f"Value(s) for placeholder {{{v}}} (single or [a,b,c]): ")
         if not vals:
-            print(f"[!] No values entered for {{{v}}}. Skipping.")
+            logger.warning(f"No values entered for {{{v}}}. Skipping.")
             return {}
         var_map[v] = vals
     out = {}
     for label_suffix, filled in expand_one_payload_string(s, var_map):
         new_label = "p0" if not label_suffix else f"p0|{label_suffix}"
         out[new_label] = filled
-    # محدود کردن تعداد ترکیب‌ها
     if len(out) > max_combinations:
         out = dict(list(out.items())[:max_combinations])
-        print(f"[*] Limited to {max_combinations} combinations.")
+        logger.info(f"Limited to {max_combinations} combinations.")
     return out
 
 def discover_py_files(folder: str):
@@ -104,19 +109,22 @@ def discover_py_files(folder: str):
         for f in files:
             if f.endswith(".py"):
                 out.append(os.path.join(root, f))
+    logger.info(f"Discovered {len(out)} Python files in {folder}")
     return out
 
 def load_module_from_path(path: str):
     name = f"dynmod_{abs(hash(path))}"
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
+        logger.error(f"Failed to create spec for {path}")
         return None
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)
+        logger.info(f"Loaded module from {path}")
         return mod
     except Exception as e:
-        print(f"[-] Failed to load {path}: {e}")
+        logger.error(f"Failed to load {path}: {e}")
         return None
 
 def collect_top_level_dicts(mod):
@@ -126,6 +134,7 @@ def collect_top_level_dicts(mod):
             continue
         if isinstance(v, dict):
             result[k] = v
+    logger.info(f"Collected {len(result)} top-level dictionaries from module")
     return result
 
 def choose_from_list(title, items):
@@ -138,19 +147,24 @@ def choose_from_list(title, items):
     if sel in ("0", "۰"): return None
     try:
         idx = to_int_safe(sel, 1, len(items)) - 1
+        return items[idx]
     except Exception:
-        print("[-] Invalid selection.")
+        logger.error("Invalid selection.")
         return None
-    return items[idx]
 
 def flatten_payload_dict(payload_dict):
     flat = {}
     for key, val in payload_dict.items():
-        if isinstance(val, list):
-            for i, v in enumerate(val):
+        if isinstance(val, dict):
+            payloads = val.get("payloads", [])
+        else:
+            payloads = val
+        if isinstance(payloads, list):
+            for i, v in enumerate(payloads):
                 flat[f"{key}[{i}]"] = str(v)
         else:
-            flat[str(key)] = str(val)
+            flat[str(key)] = str(payloads)
+    logger.info(f"Flattened payload dictionary with {len(flat)} items")
     return flat
 
 def compile_error_patterns(err_dict):
@@ -161,9 +175,10 @@ def compile_error_patterns(err_dict):
             try:
                 c.append(re.compile(p, re.IGNORECASE | re.DOTALL))
             except re.error as e:
-                print(f"[!] Invalid regex for {engine}: {p} ({e})")
+                logger.error(f"Invalid regex for {engine}: {p} ({e})")
         if c:
             comp[engine] = c
+    logger.info(f"Compiled error patterns for {len(comp)} engines")
     return comp
 
 def scan_errors(text: str, compiled_errs):
@@ -173,4 +188,5 @@ def scan_errors(text: str, compiled_errs):
             m = r.search(text or "")
             if m:
                 hits.append({"engine": engine, "pattern": r.pattern})
+    logger.info(f"Found {len(hits)} error pattern matches")
     return hits

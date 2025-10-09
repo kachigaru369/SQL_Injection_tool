@@ -44,6 +44,7 @@ def parse_multi_indices(s: str, max_len: int):
     return sorted(out)
 
 def sql_escape(s: str) -> str:
+    """SQL escape for single quotes"""
     return s.replace("'", "''")
 
 def escape_html(s: str) -> str:
@@ -77,97 +78,123 @@ def apply_context_escape(s: str, ctx: str) -> str:
         return js_string_escape(s)
     return s
 
-def default_folder_input(prompt_text: str):
-    base = os.path.dirname(os.path.abspath(__file__))
-    raw = input(prompt_text).strip()
-    if not raw:
-        return base
-    if os.path.isabs(raw):
-        return raw
-    return os.path.join(base, raw)
-
-def _short_hash(s: str):
-    if not s:
-        return "-"
-    data = s[:65536].encode("utf-8", errors="ignore")
-    return hashlib.sha1(data).hexdigest()[:10]
-
 def looks_encoded(s: str) -> bool:
-    ENCODED_RX = re.compile(r"%[0-9A-Fa-f]{2}")
-    return bool(ENCODED_RX.search(s or ""))
+    """Check if string looks URL-encoded"""
+    encoded_chars = "%20", "%3C", "%3E", "%26", "%22", "%27"
+    return any(encoded in s for encoded in encoded_chars)
 
-def timed_send(ic, req, quiet: bool = False, tries_override: int = None):
+def default_folder_input(prompt: str, default: str = None) -> str:
+    """Prompt for a folder path with optional default"""
+    if default is None:
+        default = os.getcwd()
+    folder = input(f"{prompt} [default: {default}]: ").strip()
+    if not folder:
+        return default
+    if os.path.isdir(folder):
+        return folder
+    print(f"[-] '{folder}' is not a valid directory. Using default: {default}")
+    return default
+
+def _short_hash(s: str) -> str:
+    """Generate a short hash of a string"""
+    if not s:
+        return "0"
+    return hashlib.md5(s.encode('utf-8')).hexdigest()[:8]
+
+def timed_send(ic, req, tries=3, quiet=False):
+    """Send a request with timing and retry logic"""
+    transient = {429, 502, 503, 504}
+    backoff = 0.6
     t0 = time.perf_counter()
-    r = ic.send(req, quiet=quiet, tries_override=tries_override)
-    dt = time.perf_counter() - t0
-    return r, dt
+    r = ic.send(req, quiet=quiet, tries_override=tries)
+    t1 = time.perf_counter()
+    return r, t1 - t0
 
-def validate_input(prompt: str, input_type: str = "str", default=None, valid_options: list = None):
-    """اعتبارسنجی ورودی کاربر"""
+def validate_input(prompt: str, input_type: str = "str", valid_options=None, default=None):
+    """Validate user input with retries"""
     while True:
         value = input(prompt).strip()
         if not value and default is not None:
             return default
+        if valid_options and value not in valid_options:
+            print(f"[-] Invalid input. Valid options: {valid_options}")
+            continue
         try:
             if input_type == "int":
-                value = int(value)
-                if valid_options and value not in valid_options:
-                    print(f"[-] Must be one of {valid_options}")
-                    continue
+                return to_int_safe(value)
             elif input_type == "float":
-                value = float(value)
-            elif input_type == "str" and valid_options:
-                if value not in valid_options:
-                    print(f"[-] Must be one of {valid_options}")
-                    continue
-            return value
-        except ValueError:
+                return float(value)
+            elif input_type == "str":
+                return value
+            else:
+                print(f"[-] Unsupported input type: {input_type}")
+                continue
+        except (ValueError, TypeError):
             print(f"[-] Invalid {input_type}. Try again.")
+            continue
 
-def save_results(results: dict, filename: str):
-    """ذخیره نتایج در فایل JSON"""
+def save_results(results, filename: str):
+    """Save results to JSON file"""
     try:
         with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
+            json.dump(results, f, ensure_ascii=False, indent=2, default=str)
         print(f"[*] Results saved to {filename}")
     except Exception as e:
         print(f"[-] Failed to save results: {e}")
 
 def load_results(filename: str) -> dict:
-    """بارگذاری نتایج از فایل JSON"""
+    """Load results from JSON file"""
     try:
         with open(filename, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
         print(f"[-] Failed to load results: {e}")
-        return None
+        return {}
 
 def load_custom_payloads(filename: str = "custom_payloads.json"):
-    """بارگذاری لیست‌های دلخواه payloadها از فایل JSON"""
+    """Load custom payload lists from JSON file"""
     file_path = os.path.join(os.path.dirname(__file__), filename)
     try:
         if not os.path.exists(file_path):
             print(f"[*] Creating default {filename}")
             default_data = {
                 "lists": {
-                    "sql_injection_basic": ["' OR 1=1--", "' UNION SELECT NULL--"],
-                    "union_tests": ["' UNION SELECT 1,2,3--", "' UNION SELECT database()--"],
-                    "time_based": ["' AND SLEEP(5)--", "' AND pg_sleep(5)--"]
+                    "sql_injection_basic": {
+                        "payloads": ["' OR 1=1--", "' UNION SELECT NULL--"],
+                        "metadata": {"dbms": ["generic"], "type": "basic"}
+                    },
+                    "union_tests": {
+                        "payloads": ["' UNION SELECT 1,2,3--", "' UNION SELECT database()--"],
+                        "metadata": {"dbms": ["MySQL"], "type": "union"}
+                    },
+                    "time_based": {
+                        "payloads": ["' AND SLEEP(5)--", "' AND pg_sleep(5)--"],
+                        "metadata": {"dbms": ["MySQL", "PostgreSQL"], "type": "time-based"}
+                    }
                 }
             }
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(default_data, f, ensure_ascii=False, indent=2)
-            return default_data["lists"]
+            return default_data.get("lists", {})
         
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return data.get("lists", {})
+            lists = data.get("lists", {})
+            # Ensure compatibility with new format
+            for list_name, list_data in lists.items():
+                if isinstance(list_data, list):
+                    # Old format - convert to new format
+                    lists[list_name] = {
+                        "payloads": list_data,
+                        "metadata": {"dbms": ["generic"], "type": "generic"}
+                    }
+            return lists
     except Exception as e:
         print(f"[-] Failed to load {filename}: {e}")
         return {}
 
 def save_custom_payloads(payload_lists: dict, filename: str = "custom_payloads.json"):
-    """ذخیره لیست‌های دلخواه payloadها در فایل JSON"""
+    """Save custom payload lists to JSON file"""
     file_path = os.path.join(os.path.dirname(__file__), filename)
     data = {"lists": payload_lists}
     try:

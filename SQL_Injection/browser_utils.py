@@ -1,6 +1,5 @@
 from utils import to_int_safe, parse_multi_indices
 
-# Improved import with better error message
 PW_AVAILABLE = False
 try:
     from playwright.sync_api import sync_playwright
@@ -58,8 +57,14 @@ def prompt_open_results_in_browser(prepared_requests):
                 if req["method"].upper() == "GET":
                     page.goto(req["url"], wait_until="domcontentloaded")
                 else:
-                    print(f"[*] Opening POST request {k} as GET (browser limitation)")
-                    page.goto(req["url"], wait_until="domcontentloaded")
+                    # Simulate POST request by creating a form
+                    page.set_content(f"""
+                        <form id="autoSubmit" action="{req['url']}" method="POST">
+                            {''.join(f'<input type="hidden" name="{k}" value="{v}">' for k, v in req.get("data", {}).items())}
+                        </form>
+                        <script>document.getElementById('autoSubmit').submit();</script>
+                    """)
+                    page.wait_for_load_state("domcontentloaded")
                 print(f"[*] Opened {k}")
                 input("Press Enter to close this page...")
                 page.close()

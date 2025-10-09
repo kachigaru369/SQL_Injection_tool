@@ -1,8 +1,23 @@
-import time  # Added for perf_counter
-from utils import to_int_safe, timed_send, _short_hash, save_results, validate_input
+import time
+import concurrent.futures
+from utils import to_int_safe, timed_send, _short_hash, save_results, validate_input, load_custom_payloads
 from payload_handlers import expand_single_payload_string
 
-def run_blind_user_payload(ic, obfuscator, default_payloads=None):
+def filter_payloads(payloads, dbms=None, attack_type=None):
+    """Filter payloads based on DBMS and attack type"""
+    payload_lists = load_custom_payloads()
+    filtered = []
+    for payload in payloads:
+        for list_name, list_data in payload_lists.items():
+            if payload in list_data["payloads"]:
+                metadata = list_data.get("metadata", {})
+                if (not dbms or any(db in metadata.get("dbms", []) for db in ([dbms] if isinstance(dbms, str) else dbms))) and \
+                   (not attack_type or metadata.get("type") == attack_type):
+                    filtered.append(payload)
+                break
+    return filtered or payloads
+
+def run_blind_user_payload(ic, obfuscator, default_payloads=None, dbms=None, attack_type=None):
     if not ic or not ic.prepared_data or not ic.selected_keys:
         print("[-] No inputs selected. Use option 2 first.")
         return
@@ -49,6 +64,10 @@ def run_blind_user_payload(ic, obfuscator, default_payloads=None):
         if retries < 1:
             print("[-] Invalid retries.")
             return
+        max_workers = int(validate_input("Enter max parallel workers [5]: ", "int", default="5"))
+        if max_workers < 1:
+            print("[-] Invalid workers.")
+            return
 
     payloads = default_payloads or []
     if not payloads:
@@ -62,29 +81,36 @@ def run_blind_user_payload(ic, obfuscator, default_payloads=None):
             print("[-] No payloads provided.")
             return
 
+    # Filter payloads by DBMS and attack type
+    payloads = filter_payloads(payloads, dbms, attack_type)
+    if not payloads:
+        print("[-] No payloads matched the filter criteria.")
+        return
+
     apply_obf = validate_input("Apply obfuscation to all payloads? (y/n): ", "str", valid_options=["y","n","yes","no","1","0"], default="n")
     if apply_obf in ("y", "yes", "1"):
         for i, p in enumerate(payloads):
-            new_p, tech = obfuscator.obfuscate_advanced(p, char_budget=50)
+            new_p, tech = obfuscator.obfuscate_advanced(p, char_budget=50, dbms=dbms)
             print(f"[*] Obfuscated {p} -> {new_p} ({', '.join(tech)})")
             payloads[i] = new_p
 
     results = []
-    for payload in payloads:
+    def process_payload(payload):
+        result_list = []
         print(f"\n[*] Testing payload: {payload}")
         expanded = expand_single_payload_string(payload)
         if not expanded:
             print("[-] Could not expand payload.")
-            continue
+            return result_list
         prepared = ic.prepare_injection(expanded)
         if not prepared:
             print("[-] Prepare failed.")
-            continue
+            return result_list
         for label, reqs in prepared.items():
             print(f"\n[*] Label: {label}")
             for k, req in reqs.items():
                 print(f"[*] Input: {k}")
-                result = {"payload": payload, "label": label, "input": k}
+                result = {"payload": payload, "label": label, "input": k, "timestamp": time.time()}
                 if mode == "time":
                     times = []
                     for i in range(retries):
@@ -131,5 +157,13 @@ def run_blind_user_payload(ic, obfuscator, default_payloads=None):
                     result["status_code"] = r.status_code
                     result["body_length"] = len(body)
                     result["body_hash"] = _short_hash(body)
-                results.append(result)
+                result_list.append(result)
+        return result_list
+
+    # Parallel processing of payloads
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_payload = {executor.submit(process_payload, payload): payload for payload in payloads}
+        for future in concurrent.futures.as_completed(future_to_payload):
+            results.extend(future.result())
+
     save_results(results, f"blind_results_{int(time.time())}.json")
